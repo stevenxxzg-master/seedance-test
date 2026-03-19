@@ -235,30 +235,29 @@ app.post("/api/upload/video", upload.single("file"), async (req, res) => {
   }
 });
 
-// ── Volcengine Asset API (SDK proxy) ──
+// ── Volcengine Asset API (server-side AK/SK from env) ──
 const VOLC_VERSION = "2024-01-01";
+const VOLC_AK = process.env.VOLC_AK;
+const VOLC_SK = process.env.VOLC_SK;
+
+const volcService = VOLC_AK && VOLC_SK
+  ? new (require("@volcengine/openapi").Service)({
+      host: "open.volcengineapi.com",
+      serviceName: "ark",
+      region: "cn-beijing",
+      accessKeyId: VOLC_AK,
+      secretKey: VOLC_SK,
+      defaultVersion: VOLC_VERSION,
+    })
+  : null;
 
 const ALLOWED_ASSET_ACTIONS = new Set([
   "CreateAssetGroup", "CreateAsset", "ListAssetGroups", "ListAssets",
   "GetAsset", "GetAssetGroup", "UpdateAssetGroup", "UpdateAsset",
 ]);
 
-function createVolcService(ak, sk) {
-  const VolcService = require("@volcengine/openapi").Service;
-  return new VolcService({
-    host: "open.volcengineapi.com",
-    serviceName: "ark",
-    region: "cn-beijing",
-    accessKeyId: ak,
-    secretKey: sk,
-    defaultVersion: VOLC_VERSION,
-  });
-}
-
 app.post("/api/asset/:action", async (req, res) => {
-  const ak = req.headers["x-volc-ak"];
-  const sk = req.headers["x-volc-sk"];
-  if (!ak || !sk) return res.status(401).json({ error: "AK and SK are required" });
+  if (!volcService) return res.status(503).json({ error: "Asset API not configured" });
 
   const { action } = req.params;
   if (!ALLOWED_ASSET_ACTIONS.has(action)) {
@@ -266,16 +265,9 @@ app.post("/api/asset/:action", async (req, res) => {
   }
 
   try {
-    const svc = createVolcService(ak, sk);
-    const api = svc.createJSONAPI(action, { Version: VOLC_VERSION, method: "POST" });
+    const api = volcService.createJSONAPI(action, { Version: VOLC_VERSION, method: "POST" });
     const data = await api(req.body);
-    console.log("[VOLC]", action, JSON.stringify(data).slice(0, 300));
-
-    // SDK returns response body directly (including errors)
     if (data?.ResponseMetadata?.Error) {
-      return res.status(400).json(data);
-    }
-    if (data?.error) {
       return res.status(400).json(data);
     }
     res.json(data);
