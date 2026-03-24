@@ -1204,16 +1204,22 @@ setInterval(()=>{document.querySelectorAll("[data-elapsed]").forEach(el=>{const 
 let cachedGroupId = null;
 let cachedGroupCount = 0;
 
+const ASSET_BASE = "https://www.anyfast.ai";
+
 async function assetCall(action, body) {
+  // Use API Key from settings, or Base URL header from generate proxy
   const key = document.getElementById("i-key").value.trim();
-  const base = document.getElementById("i-base").value.trim();
-  if (!key || !base) throw new Error("API Key and Base URL required");
+  const base = document.getElementById("i-base").value.trim() || ASSET_BASE;
+  console.log(`[Asset API] key="${key ? key.slice(0,8)+'...' : '(empty)'}" base="${base}"`);
+  if (!key) throw new Error("API Key required for asset creation");
   const url = `${base}/volc/asset/${action}`;
   console.log(`[Asset API] POST ${url}`, body);
+  const payload = { model: "volc-asset", ...body };
+  console.log(`[Asset API] Payload:`, JSON.stringify(payload));
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, model: "volc-asset" }),
+    body: JSON.stringify(payload),
   });
   const text = await resp.text();
   console.log(`[Asset API] ${action} status=${resp.status}:`, text.slice(0, 200));
@@ -1222,7 +1228,7 @@ async function assetCall(action, body) {
     throw new Error(`Asset API returned non-JSON (status ${resp.status}): ${text.slice(0, 100)}`);
   }
   if (data.ResponseMetadata?.Error) throw new Error(data.ResponseMetadata.Error.Message || "Asset API error");
-  if (data.error) throw new Error(data.error);
+  if (data.error) throw new Error(data.error.message || data.error);
   return data.Result || data;
 }
 
@@ -1238,7 +1244,7 @@ async function ensureAssetGroup() {
 
   for (const g of groups) {
     const assets = await assetCall("ListAssets", {
-      Filter: { GroupIds: [g.Id] }, PageNumber: 1, PageSize: 1
+      Filter: { GroupIds: [g.Id], GroupType: "AIGC" }, PageNumber: 1, PageSize: 1
     });
     const count = assets.TotalCount || 0;
     console.log(`[Asset] Group ${g.Id} (${g.Name}): ${count}/64 assets`);
