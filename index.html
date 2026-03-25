@@ -6,7 +6,7 @@
 <title>Seedance</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;max-width:820px;margin:0 auto;padding:24px 20px;color:#1a1a1a;font-size:14px;line-height:1.5;background:#f7f8fa}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;max-width:820px;margin:0 auto;padding:24px 20px;color:#1a1a1a;font-size:14px;line-height:1.5;background:#fff}
 h1{font-size:18px;font-weight:600;margin-bottom:16px}
 hr{border:none;border-top:1px solid #eee;margin:20px 0}
 label{font-size:13px;color:#666;display:block;margin-bottom:3px}
@@ -975,15 +975,24 @@ async function generate() {
   const btn = document.getElementById("gen-btn");
   btn.disabled = true;
   try {
-    // Wait for any pending uploads to finish
+    // Wait for any pending uploads + asset creation to finish
     if (pendingUploads > 0) {
       while (pendingUploads > 0) await new Promise(r => setTimeout(r, 200));
+    }
+    // Also wait for queued asset creations to complete
+    await assetQueue;
+    // Verify all images have asset IDs
+    const refMode = document.getElementById("i-ref").value;
+    if (refMode === "all") {
+      const missingAsset = mediaItems.filter(m => m.type === "image" && m.url && !m.url.startsWith("asset://"));
+      if (missingAsset.length > 0) {
+        console.warn("[Generate] Images without asset ID:", missingAsset.map(m => m.name));
+      }
     }
     const body = buildRequest();
     console.log("[Generate] Request body:", JSON.stringify(body, null, 2));
     if (body.content.length === 0) { alert("请至少提供一个 Prompt 或媒体输入"); return; }
     // Capture input snapshot before sending
-    const refMode = document.getElementById("i-ref").value;
     const inputSnapshot = {
       prompt: document.getElementById("i-prompt").value.trim(),
       model: document.getElementById("i-model").value,
@@ -1203,19 +1212,17 @@ setInterval(()=>{document.querySelectorAll("[data-elapsed]").forEach(el=>{const 
 // ── Auto Asset Creation ──
 let cachedGroupId = null;
 let cachedGroupCount = 0;
+let groupLockPromise = null; // Prevent concurrent group lookups
 
 const ASSET_BASE = "https://www.anyfast.ai";
 
 async function assetCall(action, body) {
-  // Use API Key from settings, or Base URL header from generate proxy
   const key = document.getElementById("i-key").value.trim();
   const base = document.getElementById("i-base").value.trim() || ASSET_BASE;
-  console.log(`[Asset API] key="${key ? key.slice(0,8)+'...' : '(empty)'}" base="${base}"`);
   if (!key) throw new Error("API Key required for asset creation");
   const url = `${base}/volc/asset/${action}`;
-  console.log(`[Asset API] POST ${url}`, body);
+  console.log(`[Asset API] POST ${url}`);
   const payload = { model: "volc-asset", ...body };
-  console.log(`[Asset API] Payload:`, JSON.stringify(payload));
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
@@ -1233,43 +1240,63 @@ async function assetCall(action, body) {
 }
 
 async function ensureAssetGroup() {
+  // Use cached group if available and has space
   if (cachedGroupId && cachedGroupCount < 64) return cachedGroupId;
 
-  // First try: find any existing group with space
-  const list = await assetCall("ListAssetGroups", {
-    Filter: {}, PageNumber: 1, PageSize: 100
-  });
-  const groups = (list.Items || []).filter(g => !g.Name?.startsWith("__del__"));
-  console.log("[Asset] Found groups:", groups.length);
-
-  for (const g of groups) {
-    const assets = await assetCall("ListAssets", {
-      Filter: { GroupIds: [g.Id], GroupType: "AIGC" }, PageNumber: 1, PageSize: 1
-    });
-    const count = assets.TotalCount || 0;
-    console.log(`[Asset] Group ${g.Id} (${g.Name}): ${count}/64 assets`);
-    if (count < 64) {
-      cachedGroupId = g.Id;
-      cachedGroupCount = count;
-      return g.Id;
-    }
+  // Lock: if another call is already finding/creating a group, wait for it
+  if (groupLockPromise) {
+    await groupLockPromise;
+    if (cachedGroupId && cachedGroupCount < 64) return cachedGroupId;
   }
 
-  // No group with space found, create a new one
-  console.log("[Asset] No group with space, creating new one...");
-  const name = "auto-assets-" + Date.now();
-  const created = await assetCall("CreateAssetGroup", { Name: name, GroupType: "AIGC" });
-  cachedGroupId = created.Id;
-  cachedGroupCount = 0;
-  return created.Id;
+  let resolve;
+  groupLockPromise = new Promise(r => { resolve = r; });
+
+  try {
+    const list = await assetCall("ListAssetGroups", {
+      Filter: {}, PageNumber: 1, PageSize: 100
+    });
+    const groups = (list.Items || []).filter(g => !g.Name?.startsWith("__del__"));
+    console.log("[Asset] Found groups:", groups.length);
+
+    for (const g of groups) {
+      const assets = await assetCall("ListAssets", {
+        Filter: { GroupIds: [g.Id], GroupType: "AIGC" }, PageNumber: 1, PageSize: 1
+      });
+      const count = assets.TotalCount || 0;
+      console.log(`[Asset] Group ${g.Id} (${g.Name}): ${count}/64 assets`);
+      if (count < 64) {
+        cachedGroupId = g.Id;
+        cachedGroupCount = count;
+        return g.Id;
+      }
+    }
+
+    console.log("[Asset] No group with space, creating new one...");
+    const name = "auto-assets-" + Date.now();
+    const created = await assetCall("CreateAssetGroup", { Name: name, GroupType: "AIGC" });
+    cachedGroupId = created.Id;
+    cachedGroupCount = 0;
+    return created.Id;
+  } finally {
+    groupLockPromise = null;
+    resolve();
+  }
 }
 
+// Queue asset creation to avoid race conditions
+let assetQueue = Promise.resolve();
+
 async function createImageAsset(cosUrl, name) {
-  const groupId = await ensureAssetGroup();
-  const result = await assetCall("CreateAsset", {
-    GroupId: groupId, URL: cosUrl, AssetType: "Image", Name: name || "image"
-  });
-  cachedGroupCount++;
+  // Chain asset creations sequentially to avoid concurrent group issues
+  const result = await (assetQueue = assetQueue.then(async () => {
+    const groupId = await ensureAssetGroup();
+    const res = await assetCall("CreateAsset", {
+      GroupId: groupId, URL: cosUrl, AssetType: "Image", Name: name || "image"
+    });
+    cachedGroupCount++;
+    return res;
+  }));
   return result.Id;
 }
 </script>
