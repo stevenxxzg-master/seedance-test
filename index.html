@@ -25,7 +25,8 @@ a.s:hover{border-color:#999}
 .empty{color:#aaa;font-size:13px}
 
 /* ── Compose Box ── */
-.compose{background:#fff;border:1px solid #eff0f2;border-radius:12px;margin-bottom:20px;box-shadow:0 1px 6px rgba(0,0,0,.03);overflow:visible;position:relative}
+.compose{background:#fff;border:1px solid #eff0f2;border-radius:12px;margin-bottom:20px;box-shadow:0 1px 6px rgba(0,0,0,.03);overflow:visible;position:relative;transition:border-color .15s,background .15s}
+.compose.drag-over{border-color:#3d9be9;background:#f8fbff}
 .compose-body{padding:16px 20px 10px;display:flex;gap:12px;align-items:flex-start;min-height:99px}
 /* Media stack */
 .media-stack{flex-shrink:0;position:relative;min-height:64px;display:flex;align-items:center;gap:6px}
@@ -119,19 +120,32 @@ a.s:hover{border-color:#999}
 .mention-popup{min-width:200px}
 
 /* ── Tasks ── */
-.sl{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin-bottom:8px}
-.task{padding:14px;border:1px solid #e8eaed;margin-bottom:8px;border-radius:14px;background:#fff}
-.th{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
-.tid{font-family:ui-monospace,monospace;font-size:12px;color:#555}
-.st{font-size:11px;font-weight:600;padding:2px 7px;border-radius:6px}
-.st.running{color:#0969da;background:#ddf4ff}
-.st.completed{color:#1a7f37;background:#dafbe1}
-.st.failed,.st.cancelled{color:#cf222e;background:#ffebe9}
-.st.submitted,.st.processing,.st.whitelisting{color:#9a6700;background:#fff8c5}
-.st.submitting{color:#6e40c9;background:#f3effe}
-.task video{max-width:100%;margin-top:8px;display:block;border:1px solid #e0e0e0;border-radius:10px}
-.ta{margin-top:8px;display:flex;gap:8px;align-items:center}
-.rj{margin-top:8px;font-family:ui-monospace,monospace;font-size:11px;background:#f6f8fa;padding:8px;overflow:auto;white-space:pre-wrap;word-break:break-all;max-height:180px;border:1px solid #eee;border-radius:8px}
+.sl{font-size:18px;font-weight:600;color:#1a1a1a}
+.task{padding:0;border:1px solid #eceef2;margin-bottom:10px;border-radius:14px;background:#fff;overflow:hidden;transition:border-color .15s}
+.task:hover{border-color:#dde0e5}
+.task-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px 0}
+.task-header-left{display:flex;align-items:center;gap:8px}
+.tid{font-family:ui-monospace,monospace;font-size:11px;color:#aaa;letter-spacing:.3px}
+.st{font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;letter-spacing:.2px}
+.st.running{color:#0969da;background:#eef6ff}
+.st.completed{color:#1a7f37;background:#eafbef}
+.st.failed,.st.cancelled{color:#cf222e;background:#fff0f0}
+.st.submitted,.st.processing,.st.whitelisting{color:#9a6700;background:#fef9e7}
+.st.submitting{color:#6e40c9;background:#f5f0ff}
+.task-header-right{display:flex;align-items:center;gap:6px}
+.task-elapsed{font-size:10px;color:#c0c4ca}
+.task-remove{background:none;border:none;font-size:14px;color:#d0d3d8;cursor:pointer;padding:2px 4px;line-height:1;transition:color .12s;border-radius:4px}
+.task-remove:hover{color:#cf222e;background:none}
+.task-body{padding:10px 16px 14px}
+.task-video{height:240px;width:auto;max-width:100%;margin-bottom:10px;display:block;border-radius:10px;border:none;background:#f6f8fa}
+.task-actions{display:flex;gap:6px;align-items:center;margin-bottom:10px}
+.task-actions input{flex:1;font-size:11px;padding:5px 10px;border:1px solid #eceef2;border-radius:8px;background:#f9fafb;color:#666;font-family:ui-monospace,monospace}
+.task-actions button,.task-actions a.s{font-size:11px;padding:5px 12px;border-radius:8px;border:1px solid #eceef2;background:#fff;color:#555;transition:all .12s}
+.task-actions button:hover,.task-actions a.s:hover{border-color:#d0d3d8;background:#f9fafb}
+.task-error{padding:8px 12px;background:#fff8f8;border:1px solid #fce0e0;border-radius:8px;font-size:12px;color:#cf222e;line-height:1.5;margin-bottom:10px}
+.task-json{margin:0}
+.task-json summary{font-size:12px;color:#c0c4ca;cursor:pointer}
+.rj{margin-top:6px;font-family:ui-monospace,monospace;font-size:10px;background:#f9fafb;padding:10px;overflow:auto;white-space:pre-wrap;word-break:break-all;max-height:160px;border:1px solid #eceef2;border-radius:8px;color:#666}
 /* ── About Modal ── */
 .about-inner{background:#fff;border-radius:16px;width:100%;max-width:540px;padding:28px;position:relative;margin:0 auto}
 .about-close{position:absolute;top:14px;right:14px;background:none;border:none;font-size:17px;color:#ccc;cursor:pointer;line-height:1;padding:4px 8px;border-radius:6px;transition:color .12s}
@@ -150,20 +164,19 @@ a.s:hover{border-color:#999}
 .about-example{background:#f9fafb;border-radius:10px;padding:12px 14px}
 .about-example p{font-size:13px;color:#666;line-height:1.65}
 .about-example .mention{color:#3d9be9;font-weight:500}
-details summary{font-size:11px;color:#999;cursor:pointer}
 /* ── Task Input Summary ── */
-.task-input{margin-top:8px;padding:10px 12px;background:#f8f9fb;border:1px solid #eceef2;border-radius:10px;cursor:pointer;transition:border-color .15s,background .15s}
-.task-input:hover{border-color:#c8ccd2;background:#f0f2f6}
+.task-input{padding:10px 12px;background:#f9fafb;border-radius:8px;cursor:pointer;transition:background .15s}
+.task-input:hover{background:#f0f2f6}
 .task-input-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
-.task-input-reuse{font-size:11px;color:#888;display:flex;align-items:center;gap:3px;opacity:0;transition:opacity .15s}
+.task-input-reuse{font-size:10px;color:#bbb;display:flex;align-items:center;gap:3px;opacity:0;transition:opacity .15s}
 .task-input:hover .task-input-reuse{opacity:1}
-.task-input-prompt{font-size:13px;color:#333;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+.task-input-prompt{font-size:13px;color:#555;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
 .task-input-media{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
-.task-input-thumb{width:40px;height:40px;border-radius:8px;overflow:hidden;border:1px solid #e0e2e6;flex-shrink:0}
+.task-input-thumb{width:36px;height:36px;border-radius:7px;overflow:hidden;border:1px solid #eceef2;flex-shrink:0}
 .task-input-thumb img,.task-input-thumb video{width:100%;height:100%;object-fit:cover}
-.task-input-thumb-icon{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#f0f2f5;font-size:16px}
-.task-input-tags{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}
-.task-input-tag{font-size:10px;padding:2px 6px;border-radius:4px;background:#eceef2;color:#666}
+.task-input-thumb-icon{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#f4f5f7;font-size:14px;color:#ccc}
+.task-input-tags{display:flex;gap:4px;margin-top:8px;flex-wrap:wrap}
+.task-input-tag{font-size:10px;padding:2px 7px;border-radius:6px;background:#f0f2f5;color:#999}
 
 /* ── Settings ── */
 .settings{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap}
@@ -176,12 +189,12 @@ details summary{font-size:11px;color:#999;cursor:pointer}
 <body>
 <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
   <h1 style="margin-bottom:0">Seedance</h1>
-  <span onclick="toggleAbout()" style="font-size:13px;color:#888;cursor:pointer;user-select:none" id="about-toggle">About ▾</span>
+  <span onclick="toggleAbout()" style="font-size:12px;color:#ccc;cursor:pointer;user-select:none" id="about-toggle">About ▾</span>
 </div>
 
 <!-- API Settings -->
 <details style="margin-bottom:14px">
-  <summary style="font-size:12px;color:#aaa;cursor:pointer;margin-bottom:8px">API Settings</summary>
+  <summary style="font-size:12px;color:#ccc;cursor:pointer;margin-bottom:8px">API Settings</summary>
   <div class="settings">
     <div class="f" style="flex:2"><label>API Key</label><input type="password" id="i-key" placeholder="sk-..."></div>
     <div class="f" style="flex:2"><label>Base URL</label><input type="text" id="i-base" placeholder="https://www.anyfast.ai"></div>
@@ -295,11 +308,11 @@ details summary{font-size:11px;color:#999;cursor:pointer}
 <!-- Resolution (hidden, keep for API) -->
 <input type="hidden" id="i-res" value="720p">
 
-<hr>
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 4px">
   <span class="sl" style="margin:0">Tasks</span>
-  <span class="x" onclick="clearTasks()" title="Clear history" style="font-size:12px;color:#aaa;cursor:pointer">Clear</span>
+  <span onclick="clearTasks()" style="font-size:12px;color:#ccc;cursor:pointer;transition:color .12s" onmouseover="this.style.color='#888'" onmouseout="this.style.color='#ccc'">Clear All</span>
 </div>
+<div style="font-size:12px;color:#c0c4ca;margin-bottom:10px">Videos expire in 12 hours — please download promptly.</div>
 <div id="tasks"><p class="empty">No tasks yet</p></div>
 
 <!-- About Modal -->
@@ -438,7 +451,17 @@ const RATIO_SHAPES = {"21:9":[30,13],"16:9":[28,16],"4:3":[24,18],"1:1":[20,20],
   ta.addEventListener("paste", (e) => {
     e.preventDefault();
     const text = e.clipboardData.getData("text/plain");
-    document.execCommand("insertText", false, text);
+    const html = esc(text).replace(/@(Image|Video|Audio)(\d+)/g, (match, type, num) => {
+      const mType = type.toLowerCase();
+      const idx = parseInt(num);
+      let count = 0;
+      const item = mediaItems.find(m => m.type === mType && ++count === idx);
+      const thumb = (item && item.thumbUrl)
+        ? `<img class="mention-inline-thumb" src="${esc(item.thumbUrl)}">`
+        : '';
+      return `<span class="mention" contenteditable="false" data-type="${mType}" data-text="${esc(match)}">${thumb}${match}</span>`;
+    });
+    document.execCommand("insertHTML", false, html);
   });
 
   // Pre-fill Base URL default
@@ -880,6 +903,28 @@ function pickFile() {
   };
   input.click();
 }
+
+// ── Drag & Drop ──
+const _compose = document.getElementById("compose-box");
+let _dragCount = 0;
+_compose.addEventListener("dragenter", (e) => { e.preventDefault(); _dragCount++; _compose.classList.add("drag-over"); });
+_compose.addEventListener("dragleave", (e) => { e.preventDefault(); if (--_dragCount <= 0) { _dragCount = 0; _compose.classList.remove("drag-over"); } });
+_compose.addEventListener("dragover", (e) => e.preventDefault());
+_compose.addEventListener("drop", (e) => {
+  e.preventDefault();
+  _dragCount = 0;
+  _compose.classList.remove("drag-over");
+  const files = e.dataTransfer.files;
+  if (!files.length) return;
+  for (const file of files) {
+    const type = detectFileType(file);
+    const id = ++mediaIdCounter;
+    const thumbUrl = (type === "image" || type === "video") ? URL.createObjectURL(file) : "";
+    mediaItems.push({ id, type, url: "", thumbUrl, name: file.name, file });
+    handleFileForItem(id, file);
+  }
+  renderStack();
+});
 
 // Keep addMedia for asset library usage
 function addMedia(type) {
@@ -1334,7 +1379,7 @@ function renderTaskInput(t) {
   if (!t.input) return '';
   const inp = t.input;
   let h = `<div class="task-input" onclick="restoreInput('${escJs(t.id||'')}')">`;
-  h += `<div class="task-input-header"><span style="font-size:11px;color:#999">Input</span><span class="task-input-reuse"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg> Re-use</span></div>`;
+  h += `<div class="task-input-header"><span style="font-size:10px;color:#c0c4ca;text-transform:uppercase;letter-spacing:.3px">Input</span><span class="task-input-reuse"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg> Re-use</span></div>`;
   if (inp.prompt) {
     h += `<div class="task-input-prompt">${esc(inp.prompt)}</div>`;
   }
@@ -1373,9 +1418,6 @@ function restoreInput(taskId) {
   const task = tasks.find(t => t.id === taskId);
   if (!task || !task.input) return;
   const inp = task.input;
-
-  // Prompt
-  setPromptText(inp.prompt || "");
 
   // Model
   document.getElementById("i-model").value = inp.model || "seedance";
@@ -1442,6 +1484,9 @@ function restoreInput(taskId) {
     }
   }
 
+  // Prompt (after media restored so thumbnails resolve)
+  setPromptText(inp.prompt || "");
+
   // Scroll to compose box
   document.getElementById("compose-box").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -1449,22 +1494,26 @@ function restoreInput(taskId) {
 function renderTasks() {
   const c = document.getElementById("tasks");
   if (!tasks.length) { c.innerHTML = '<p class="empty">No tasks yet</p>'; return; }
-  const SL = {submitting:"提交中",whitelisting:"处理隐私图片",submitted:"已提交",processing:"生成中",running:"生成中",completed:"完成",failed:"失败",cancelled:"已取消"};
+  const SL = {submitting:"Submitting",whitelisting:"Processing",submitted:"Queued",processing:"Generating",running:"Generating",completed:"Done",failed:"Failed",cancelled:"Cancelled"};
   c.innerHTML = tasks.map(t => {
     const isLive = t.status === "submitting" || t.status === "whitelisting";
-    const liveIcon = isLive ? `<span style="display:inline-block;width:9px;height:9px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:3px"></span>` : "";
+    const liveIcon = isLive ? `<span style="display:inline-block;width:8px;height:8px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:3px"></span>` : "";
     const key = t.id || ("_" + t.created);
-    let h = `<div class="task" id="task-${key}"><div class="th"><span class="tid">${t.id||""}</span><span><span class="st ${t.status}">${liveIcon}${SL[t.status]||t.status}</span>${t.progress?`<span style="font-size:11px;color:#0969da;margin-left:6px">${t.progress}</span>`:""}<span data-elapsed="${key}" style="font-size:11px;color:#aaa;margin-left:6px">${elapsed(t)}</span><span class="x" onclick="removeTask('${escJs(key)}')" title="Remove" style="margin-left:6px">×</span></span></div>`;
+    let h = `<div class="task" id="task-${key}">`;
+    h += `<div class="task-header"><div class="task-header-left"><span class="st ${t.status}">${liveIcon}${SL[t.status]||t.status}</span><span class="tid">${t.id||""}</span>${t.progress?`<span style="font-size:10px;color:#0969da">${t.progress}</span>`:""}</div>`;
+    h += `<div class="task-header-right"><span class="task-elapsed" data-elapsed="${key}">${elapsed(t)}</span><button class="task-remove" onclick="removeTask('${escJs(key)}')" title="Remove">×</button></div></div>`;
+    h += `<div class="task-body">`;
     h += renderTaskInput(t);
     if (t.error) {
-      h += `<div style="margin-top:6px;padding:7px 10px;background:#fff0f0;border:1px solid #ffc8c8;border-radius:8px;font-size:12px;color:#cf222e">${esc(t.error)}</div>`;
+      h += `<div class="task-error">${esc(t.error)}</div>`;
     }
     if (t.videoUrl) {
-      h += `<video src="${esc(t.videoUrl)}" controls preload="metadata"></video>`;
-      h += `<div class="ta"><input type="text" value="${esc(t.videoUrl)}" readonly onclick="this.select()" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid #d0d7de;border-radius:6px;background:#f6f8fa"><button class="s" onclick="navigator.clipboard.writeText('${escJs(t.videoUrl)}')">Copy</button><a href="${esc(t.videoUrl)}" target="_blank" download class="s">Download</a></div>`;
+      h += `<video class="task-video" src="${esc(t.videoUrl)}" controls preload="metadata"></video>`;
+      h += `<div class="task-actions"><input type="text" value="${esc(t.videoUrl)}" readonly onclick="this.select()"><button onclick="navigator.clipboard.writeText('${escJs(t.videoUrl)}')">Copy</button><a href="${esc(t.videoUrl)}" target="_blank" download class="s">Save</a></div>`;
     }
-    h += `<details style="margin-top:8px"><summary>Response JSON</summary><div class="rj">${esc(JSON.stringify(t.response,null,2))}</div></details>`;
-    return h + "</div>";
+    h += `<details class="task-json"><summary>Response</summary><div class="rj">${esc(JSON.stringify(t.response,null,2))}</div></details>`;
+    h += `</div></div>`;
+    return h;
   }).join("");
 }
 
