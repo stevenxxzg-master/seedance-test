@@ -1109,7 +1109,7 @@ async function handleFileForItem(id, file) {
       }
       ({ fileUrl } = await resp.json());
     } else {
-      const presignResp = await fetch("/api/cos/presign", {
+      const presignResp = await fetch("/api/presign", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Storage": "tos" },
         body: JSON.stringify({ filename: file.name, contentType: file.type }),
@@ -1185,7 +1185,7 @@ async function uploadKfFile(which, file) {
   const obj = which === "first" ? kfFirst : kfLast;
   if (!obj) return;
   try {
-    const presignResp = await fetch("/api/tos/presign", {
+    const presignResp = await fetch("/api/presign", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: file.name, contentType: file.type }),
     });

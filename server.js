@@ -132,6 +132,8 @@ const cos = new COS({
 });
 
 // Get presigned upload URL — frontend uploads directly to COS
+// /api/presign — alias that also supports X-Storage: tos
+app.post("/api/presign", (req, res, next) => { req.url = "/api/cos/presign"; next(); });
 app.post("/api/cos/presign", (req, res) => {
   const { filename, contentType } = req.body;
   if (!filename || !contentType) {
