@@ -359,6 +359,41 @@ a.s:hover{border-color:#999}
 // ── State ──
 const MAX_TASKS = 50;
 const tasks = JSON.parse(localStorage.getItem("tasks") || "[]");
+// Purge legacy demo tasks from localStorage
+for (let i = tasks.length - 1; i >= 0; i--) { if (tasks[i].demo) tasks.splice(i, 1); }
+
+// Demo tasks (rendered dynamically, not stored in localStorage)
+const _TB = "/tutorial";
+const DEMO_TASKS = {
+  all: {
+    id: "demo-reference", demo: true, status: "completed",
+    created: 0, endTime: 0,
+    videoUrl: `${_TB}/全能参考 All-modal Reference/Output.mp4`,
+    input: {
+      prompt: "@Image1 @Image2 copy movements and footworks in @Video1. Music reference: @Audio1.",
+      model: "seedance", refMode: "all", ratio: "16:9", duration: 10,
+      mediaItems: [
+        { type: "image", name: "@Image1.png", url: `${_TB}/全能参考 All-modal Reference/@图片1.png`, cosUrl: `${_TB}/全能参考 All-modal Reference/@图片1.png` },
+        { type: "image", name: "@Image2.png", url: `${_TB}/全能参考 All-modal Reference/@图片2.png`, cosUrl: `${_TB}/全能参考 All-modal Reference/@图片2.png` },
+        { type: "video", name: "@Video1.mp4", url: `${_TB}/全能参考 All-modal Reference/@视频1.mp4`, cosUrl: `${_TB}/全能参考 All-modal Reference/@视频1.mp4` },
+        { type: "audio", name: "@Audio1.wav", url: `${_TB}/全能参考 All-modal Reference/@Audio1.WAV`, cosUrl: `${_TB}/全能参考 All-modal Reference/@Audio1.WAV` },
+      ]
+    },
+    response: {}
+  },
+  keyframes: {
+    id: "demo-keyframes", demo: true, status: "completed",
+    created: 0, endTime: 0,
+    videoUrl: `${_TB}/首尾帧 Start-End Frame/Output.mp4`,
+    input: {
+      prompt: "Silver magic erupts, armor snaps onto her body in rapid flashes. Camera pushes in then pulls back wide. Hair billows, shockwave ripples the ocean. Moonlit beach, flat vector style.",
+      model: "seedance", refMode: "keyframes", ratio: "16:9", duration: 5,
+      kfFirst: { url: `${_TB}/首尾帧 Start-End Frame/frame_start.png`, cosUrl: `${_TB}/首尾帧 Start-End Frame/frame_start.png`, name: "frame_start.png" },
+      kfLast: { url: `${_TB}/首尾帧 Start-End Frame/frame_end.png`, cosUrl: `${_TB}/首尾帧 Start-End Frame/frame_end.png`, name: "frame_end.png" },
+    },
+    response: {}
+  }
+};
 let pollTimer = null;
 const mediaItems = []; // { id, type, url, file, thumbUrl, name }
 let mediaIdCounter = 0;
@@ -456,9 +491,7 @@ const RATIO_SHAPES = {"21:9":[30,13],"16:9":[28,16],"4:3":[24,18],"1:1":[20,20],
       const idx = parseInt(num);
       let count = 0;
       const item = mediaItems.find(m => m.type === mType && ++count === idx);
-      const thumb = (item && item.thumbUrl)
-        ? `<img class="mention-inline-thumb" src="${esc(item.thumbUrl)}">`
-        : '';
+      const thumb = item ? mentionThumbHtml(mType, item.thumbUrl) : '';
       return `<span class="mention" contenteditable="false" data-type="${mType}" data-text="${esc(match)}">${thumb}${match}</span>`;
     });
     document.execCommand("insertHTML", false, html);
@@ -597,6 +630,7 @@ function syncRefMode() {
     ? "Describe the action or smooth transition between these two frames."
     : "Upload 1-12 assets and enter your prompt. Mix images, video, and audio. Example: @Image1 mimics the motion of @Video1, with voice from @Audio1.");
   document.getElementById("at-pill").style.display = isKf ? "none" : "";
+  renderTasks();
 }
 
 function selectRes(el) {
@@ -706,6 +740,13 @@ function getPromptText() {
   return text;
 }
 
+function mentionThumbHtml(mType, url) {
+  if (!url && mType !== "audio") return '';
+  if (mType === "video") return `<video class="mention-inline-thumb" src="${esc(url)}" muted preload="metadata"></video>`;
+  if (mType === "audio") return `<span class="mention-inline-thumb" style="display:inline-flex;align-items:center;justify-content:center;background:#f0f2f5;font-size:10px">🎵</span>`;
+  return `<img class="mention-inline-thumb" src="${esc(url)}">`;
+}
+
 function setPromptText(text) {
   const el = document.getElementById("i-prompt");
   if (!text) { el.innerHTML = ""; return; }
@@ -714,9 +755,7 @@ function setPromptText(text) {
     const idx = parseInt(num);
     let count = 0;
     const item = mediaItems.find(m => m.type === mType && ++count === idx);
-    const thumb = (item && item.thumbUrl)
-      ? `<img class="mention-inline-thumb" src="${esc(item.thumbUrl)}">`
-      : '';
+    const thumb = item ? mentionThumbHtml(mType, item.thumbUrl) : '';
     return `<span class="mention" contenteditable="false" data-type="${mType}" data-text="${esc(match)}">${thumb}${match}</span>`;
   });
 }
@@ -727,11 +766,11 @@ function buildMentionSpan(label, type, thumbUrl) {
   span.contentEditable = "false";
   span.setAttribute("data-type", type);
   span.setAttribute("data-text", "@" + label);
-  if (thumbUrl) {
-    const img = document.createElement("img");
-    img.className = "mention-inline-thumb";
-    img.src = thumbUrl;
-    span.appendChild(img);
+  const thumbHtml = mentionThumbHtml(type, thumbUrl);
+  if (thumbHtml) {
+    const temp = document.createElement("span");
+    temp.innerHTML = thumbHtml;
+    span.appendChild(temp.firstChild);
   }
   span.appendChild(document.createTextNode("@" + label));
   return span;
@@ -1395,7 +1434,17 @@ function renderTaskInput(t) {
   let h = `<div class="task-input" onclick="restoreInput('${escJs(t.id||'')}')">`;
   h += `<div class="task-input-header"><span style="font-size:10px;color:#c0c4ca;text-transform:uppercase;letter-spacing:.3px">Input</span><span class="task-input-reuse"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg> Re-use</span></div>`;
   if (inp.prompt) {
-    h += `<div class="task-input-prompt">${esc(inp.prompt)}</div>`;
+    const media = inp.mediaItems || [];
+    const promptHtml = esc(inp.prompt).replace(/@(Image|Video|Audio)(\d+)/g, (match, type, num) => {
+      const mType = type.toLowerCase();
+      const idx = parseInt(num);
+      let count = 0;
+      const item = media.find(m => m.type === mType && ++count === idx);
+      const thumb = item ? mentionThumbHtml(mType, item.cosUrl || item.url) : '';
+      const c = mType === "image" ? "#3d9be9" : mType === "video" ? "#e67e22" : "#27ae60";
+      return `<span style="color:${c};font-weight:500">${thumb}${match}</span>`;
+    });
+    h += `<div class="task-input-prompt">${promptHtml}</div>`;
   }
   // Thumbnails
   const thumbs = [];
@@ -1429,7 +1478,7 @@ function renderTaskInput(t) {
 }
 
 function restoreInput(taskId) {
-  const task = tasks.find(t => t.id === taskId);
+  const task = tasks.find(t => t.id === taskId) || Object.values(DEMO_TASKS).find(d => d.id === taskId);
   if (!task || !task.input) return;
   const inp = task.input;
 
@@ -1505,30 +1554,47 @@ function restoreInput(taskId) {
   document.getElementById("compose-box").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function renderOneTask(t) {
+  const SL = {submitting:"Submitting",whitelisting:"Processing",submitted:"Queued",processing:"Generating",running:"Generating",completed:"Done",failed:"Failed",cancelled:"Cancelled"};
+  const isLive = t.status === "submitting" || t.status === "whitelisting";
+  const liveIcon = isLive ? `<span style="display:inline-block;width:8px;height:8px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:3px"></span>` : "";
+  const key = t.id || ("_" + t.created);
+  const demoBadge = t.demo ? `<span style="font-size:10px;font-weight:500;color:#3d9be9;background:#eef6ff;padding:2px 7px;border-radius:10px">Tutorial</span>` : "";
+  const removeBtn = t.demo
+    ? `<button class="task-remove" onclick="dismissDemo('${escJs(t.id)}')" title="Remove">×</button>`
+    : `<button class="task-remove" onclick="removeTask('${escJs(key)}')" title="Remove">×</button>`;
+  let h = `<div class="task" id="task-${key}">`;
+  h += `<div class="task-header"><div class="task-header-left">${demoBadge}<span class="st ${t.status}">${liveIcon}${SL[t.status]||t.status}</span>${t.progress?`<span style="font-size:10px;color:#0969da">${t.progress}</span>`:""}</div>`;
+  h += `<div class="task-header-right">${t.demo?"":`<span class="task-elapsed" data-elapsed="${key}">${elapsed(t)}</span>`}${removeBtn}</div></div>`;
+  h += `<div class="task-body">`;
+  h += renderTaskInput(t);
+  if (t.error) h += `<div class="task-error">${esc(t.error)}</div>`;
+  if (t.videoUrl) {
+    h += `<video class="task-video" src="${esc(t.videoUrl)}" controls preload="metadata"></video>`;
+    if (!t.demo) h += `<div class="task-actions"><input type="text" value="${esc(t.videoUrl)}" readonly onclick="this.select()"><button onclick="navigator.clipboard.writeText('${escJs(t.videoUrl)}')">Copy</button><a href="${esc(t.videoUrl)}" target="_blank" download class="s">Save</a></div>`;
+  }
+  if (!t.demo) h += `<details class="task-json"><summary>Response</summary><div class="rj">${esc(JSON.stringify(t.response,null,2))}</div></details>`;
+  h += `</div></div>`;
+  return h;
+}
+
 function renderTasks() {
   const c = document.getElementById("tasks");
-  if (!tasks.length) { c.innerHTML = '<p class="empty">No tasks yet</p>'; return; }
-  const SL = {submitting:"Submitting",whitelisting:"Processing",submitted:"Queued",processing:"Generating",running:"Generating",completed:"Done",failed:"Failed",cancelled:"Cancelled"};
-  c.innerHTML = tasks.map(t => {
-    const isLive = t.status === "submitting" || t.status === "whitelisting";
-    const liveIcon = isLive ? `<span style="display:inline-block;width:8px;height:8px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:3px"></span>` : "";
-    const key = t.id || ("_" + t.created);
-    let h = `<div class="task" id="task-${key}">`;
-    h += `<div class="task-header"><div class="task-header-left"><span class="st ${t.status}">${liveIcon}${SL[t.status]||t.status}</span><span class="tid">${t.id||""}</span>${t.progress?`<span style="font-size:10px;color:#0969da">${t.progress}</span>`:""}</div>`;
-    h += `<div class="task-header-right"><span class="task-elapsed" data-elapsed="${key}">${elapsed(t)}</span><button class="task-remove" onclick="removeTask('${escJs(key)}')" title="Remove">×</button></div></div>`;
-    h += `<div class="task-body">`;
-    h += renderTaskInput(t);
-    if (t.error) {
-      h += `<div class="task-error">${esc(t.error)}</div>`;
-    }
-    if (t.videoUrl) {
-      h += `<video class="task-video" src="${esc(t.videoUrl)}" controls preload="metadata"></video>`;
-      h += `<div class="task-actions"><input type="text" value="${esc(t.videoUrl)}" readonly onclick="this.select()"><button onclick="navigator.clipboard.writeText('${escJs(t.videoUrl)}')">Copy</button><a href="${esc(t.videoUrl)}" target="_blank" download class="s">Save</a></div>`;
-    }
-    h += `<details class="task-json"><summary>Response</summary><div class="rj">${esc(JSON.stringify(t.response,null,2))}</div></details>`;
-    h += `</div></div>`;
-    return h;
-  }).join("");
+  let html = "";
+  if (tasks.length) html = tasks.map(renderOneTask).join("");
+  // Append demo task for current mode
+  const mode = document.getElementById("i-ref").value === "keyframes" ? "keyframes" : "all";
+  const demo = DEMO_TASKS[mode];
+  const dismissed = JSON.parse(localStorage.getItem("dismissedDemos") || "[]");
+  if (demo && !dismissed.includes(demo.id)) html += renderOneTask(demo);
+  c.innerHTML = html || '<p class="empty">No tasks yet</p>';
+}
+
+function dismissDemo(id) {
+  const dismissed = JSON.parse(localStorage.getItem("dismissedDemos") || "[]");
+  if (!dismissed.includes(id)) dismissed.push(id);
+  localStorage.setItem("dismissedDemos", JSON.stringify(dismissed));
+  renderTasks();
 }
 
 function removeTask(key) {
