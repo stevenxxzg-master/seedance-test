@@ -155,38 +155,6 @@ app.post("/api/cos/presign", (req, res) => {
   );
 });
 
-// Generic file upload — supports COS (default) and TOS (X-Storage: tos)
-app.post("/api/upload/file", upload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file provided" });
-  const useTos = req.headers["x-storage"] === "tos";
-  try {
-    let fileUrl;
-    if (useTos) {
-      if (!TOS_AK || !TOS_SK) throw new Error("TOS not configured");
-      const ext = (req.file.originalname || "bin").split(".").pop() || "bin";
-      const key = `uploads/${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`;
-      const presign = tosPresignPut(key, req.file.mimetype);
-      const body = readFileSync(req.file.path);
-      const upResp = await fetch(presign.uploadUrl, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body });
-      if (!upResp.ok) throw new Error(`TOS upload failed: ${upResp.status}`);
-      fileUrl = presign.fileUrl;
-    } else {
-      const ext = (req.file.originalname || "bin").split(".").pop() || "bin";
-      const cosKey = `uploads/${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`;
-      await new Promise((resolve, reject) => {
-        cos.putObject({ Bucket: COS_BUCKET, Region: COS_REGION, Key: cosKey, Body: createReadStream(req.file.path), ContentType: req.file.mimetype }, (err) => err ? reject(err) : resolve());
-      });
-      fileUrl = `${COS_BASE_URL}/${cosKey}`;
-    }
-    res.json({ fileUrl });
-  } catch (err) {
-    console.error("File upload error:", err);
-    res.status(500).json({ error: "Upload failed: " + err.message });
-  } finally {
-    try { unlinkSync(req.file.path); } catch {}
-  }
-});
-
 // ── Video upload with compression ──
 const MAX_PIXELS = 927408;
 const MAX_DURATION = 15;
@@ -310,6 +278,38 @@ function tosPresignPut(key, contentType, expires = 600) {
   };
 }
 
+
+// Generic file upload — supports COS (default) and TOS (X-Storage: tos)
+app.post("/api/upload/file", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file provided" });
+  const useTos = req.headers["x-storage"] === "tos";
+  try {
+    let fileUrl;
+    if (useTos) {
+      if (!TOS_AK || !TOS_SK) throw new Error("TOS not configured");
+      const ext = (req.file.originalname || "bin").split(".").pop() || "bin";
+      const key = `uploads/${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`;
+      const presign = tosPresignPut(key, req.file.mimetype);
+      const body = readFileSync(req.file.path);
+      const upResp = await fetch(presign.uploadUrl, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body });
+      if (!upResp.ok) throw new Error(`TOS upload failed: ${upResp.status}`);
+      fileUrl = presign.fileUrl;
+    } else {
+      const ext = (req.file.originalname || "bin").split(".").pop() || "bin";
+      const cosKey = `uploads/${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`;
+      await new Promise((resolve, reject) => {
+        cos.putObject({ Bucket: COS_BUCKET, Region: COS_REGION, Key: cosKey, Body: createReadStream(req.file.path), ContentType: req.file.mimetype }, (err) => err ? reject(err) : resolve());
+      });
+      fileUrl = `${COS_BASE_URL}/${cosKey}`;
+    }
+    res.json({ fileUrl });
+  } catch (err) {
+    console.error("File upload error:", err);
+    res.status(500).json({ error: "Upload failed: " + err.message });
+  } finally {
+    try { unlinkSync(req.file.path); } catch {}
+  }
+});
 
 // ── Volcengine Asset API (server-side AK/SK from env) ──
 const VOLC_VERSION = "2024-01-01";
