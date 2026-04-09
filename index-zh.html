@@ -1326,27 +1326,24 @@ async function runSubmit(task, body) {
           console.log("[Generate] PrivacyInformation detected, creating assets...");
           task.status = "whitelisting";
           renderTasks();
-          const imageItems = mediaItems.filter(m => m.type === "image" && m.url && !m.url.startsWith("asset://"));
-          const kfItems = [];
-          if (kfFirst?.url && !kfFirst.url.startsWith("asset://")) kfItems.push(kfFirst);
-          if (kfLast?.url && !kfLast.url.startsWith("asset://")) kfItems.push(kfLast);
-          await Promise.all([
-            ...imageItems.map(async (m) => {
-              try {
-                const id = await createImageAsset(m.cosUrl || m.url, m.name);
-                await new Promise(r => setTimeout(r, 5000)); // let asset process
-                m.url = "asset://" + id;
-              } catch (err) { console.warn("[Generate] Asset creation failed for", m.name, err); }
-            }),
-            ...kfItems.map(async (obj) => {
-              try {
-                const id = await createImageAsset(obj.cosUrl || obj.url, obj.name);
-                await new Promise(r => setTimeout(r, 5000));
-                obj.url = "asset://" + id;
-              } catch (err) { console.warn("[Generate] Asset creation failed for KF", err); }
-            }),
-          ]);
-          currentBody = buildRequest();
+          // Build asset URL map without mutating global mediaItems/kfFirst/kfLast
+          const assetMap = new Map(); // cosUrl → asset://id
+          const imageUrls = currentBody.content.filter(c => c.type === "image_url").map(c => c.image_url.url);
+          await Promise.all(imageUrls.map(async (url) => {
+            if (url.startsWith("asset://")) return;
+            try {
+              const id = await createImageAsset(url, "");
+              await new Promise(r => setTimeout(r, 5000));
+              assetMap.set(url, "asset://" + id);
+            } catch (err) { console.warn("[Generate] Asset creation failed for", url, err); }
+          }));
+          // Replace URLs in content without touching globals
+          currentBody = { ...currentBody, content: currentBody.content.map(c => {
+            if (c.type === "image_url" && assetMap.has(c.image_url.url)) {
+              return { ...c, image_url: { ...c.image_url, url: assetMap.get(c.image_url.url) } };
+            }
+            return c;
+          })};
           console.log("[Generate] Retrying with asset URLs...");
           continue;
         }
