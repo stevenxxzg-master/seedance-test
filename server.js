@@ -131,8 +131,16 @@ const cos = new COS({
   SecretKey: COS_SECRET_KEY,
 });
 
-// Get presigned upload URL — frontend uploads directly to COS
-// /api/presign — alias that also supports X-Storage: tos
+// Detect storage backend from Origin/Referer
+const TOS_ORIGINS = ["anyfast.com.cn"];
+function isTosOrigin(req) {
+  const origin = req.headers.origin || "";
+  const referer = req.headers.referer || "";
+  return TOS_ORIGINS.some(h => origin.includes(h) || referer.includes(h))
+    || req.body?.storage === "tos" || req.query?.storage === "tos" || req.headers["x-storage"] === "tos";
+}
+
+// Get presigned upload URL — auto-routes COS or TOS based on origin
 app.post("/api/presign", (req, res, next) => { req.url = "/api/cos/presign"; next(); });
 app.post("/api/cos/presign", (req, res) => {
   const { filename, contentType, prefix } = req.body;
@@ -144,8 +152,8 @@ app.post("/api/cos/presign", (req, res) => {
   const ext = filename.split(".").pop() || "bin";
   const key = `${pfx}/${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`;
 
-  // TOS mode via body.storage or X-Storage header
-  if ((req.body.storage === "tos" || req.headers["x-storage"] === "tos") && TOS_AK && TOS_SK) {
+  // TOS mode: auto-detect from origin or explicit storage param
+  if (isTosOrigin(req) && TOS_AK && TOS_SK) {
     try {
       const result = tosPresignPut(key, contentType);
       return res.json({ ...result, key });
@@ -237,7 +245,7 @@ app.post("/api/upload/video", upload.single("file"), async (req, res) => {
     await execFileAsync("ffmpeg", ffArgs, { timeout: 120000 });
 
     // Upload to COS or TOS
-    const useTos = req.body?.storage === "tos" || req.query?.storage === "tos" || req.headers["x-storage"] === "tos";
+    const useTos = isTosOrigin(req);
     const storageKey = `uploads/${Date.now()}_${outName}`;
     let fileUrl;
     if (useTos && TOS_AK && TOS_SK) {
