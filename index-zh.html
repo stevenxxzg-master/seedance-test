@@ -1103,7 +1103,7 @@ async function handleFileForItem(id, file) {
     if (item.type === "video") {
       const form = new FormData();
       form.append("file", file);
-      const resp = await fetch("/api/upload/video", { method: "POST", body: form, headers: { "X-Storage": "tos" } });
+      const resp = await fetch("/api/upload/video?storage=tos", { method: "POST", body: form });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.error || `Upload failed: ${resp.status}`);
@@ -1112,8 +1112,8 @@ async function handleFileForItem(id, file) {
     } else {
       const presignResp = await fetch("/api/cos/presign", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Storage": "tos" },
-        body: JSON.stringify({ filename: file.name, contentType: file.type }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, contentType: file.type, storage: "tos" }),
       });
       if (!presignResp.ok) throw new Error("Failed to get upload URL");
       const presign = await presignResp.json();
@@ -1187,8 +1187,8 @@ async function uploadKfFile(which, file) {
   if (!obj) return;
   try {
     const presignResp = await fetch("/api/cos/presign", {
-      method: "POST", headers: { "Content-Type": "application/json", "X-Storage": "tos" },
-      body: JSON.stringify({ filename: file.name, contentType: file.type }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, contentType: file.type, storage: "tos" }),
     });
     if (!presignResp.ok) throw new Error("Failed to get upload URL");
     const presign = await presignResp.json();
