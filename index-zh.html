@@ -1103,7 +1103,8 @@ async function handleFileForItem(id, file) {
     if (item.type === "video") {
       const form = new FormData();
       form.append("file", file);
-      const resp = await fetch("/api/upload/video?storage=tos", { method: "POST", body: form });
+      form.append("storage", "tos");
+      const resp = await fetch("/api/upload/video", { method: "POST", body: form });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.error || `Upload failed: ${resp.status}`);

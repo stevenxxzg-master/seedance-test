@@ -237,7 +237,7 @@ app.post("/api/upload/video", upload.single("file"), async (req, res) => {
     await execFileAsync("ffmpeg", ffArgs, { timeout: 120000 });
 
     // Upload to COS or TOS
-    const useTos = req.query.storage === "tos" || req.headers["x-storage"] === "tos";
+    const useTos = req.body?.storage === "tos" || req.query?.storage === "tos" || req.headers["x-storage"] === "tos";
     const storageKey = `uploads/${Date.now()}_${outName}`;
     let fileUrl;
     if (useTos && TOS_AK && TOS_SK) {
@@ -306,7 +306,7 @@ function tosPresignPut(key, contentType, expires = 600) {
 // Generic file upload — supports COS (default) and TOS (X-Storage: tos)
 app.post("/api/upload/file", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file provided" });
-  const useTos = req.query.storage === "tos" || req.headers["x-storage"] === "tos";
+  const useTos = req.body?.storage === "tos" || req.query?.storage === "tos" || req.headers["x-storage"] === "tos";
   try {
     let fileUrl;
     if (useTos) {
