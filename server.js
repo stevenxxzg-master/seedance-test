@@ -351,6 +351,46 @@ app.post("/api/tos/presign", (req, res) => {
   }
 });
 
+// TOS video upload — ffmpeg + upload to TOS
+app.post("/api/tos/upload-video", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file provided" });
+  if (!TOS_AK || !TOS_SK) return res.status(500).json({ error: "TOS not configured" });
+  const inputPath = req.file.path;
+  const outName = `${crypto.randomUUID().slice(0, 8)}.mp4`;
+  const outputPath = join(tmpDir, outName);
+  try {
+    const { width, height, duration } = await probeVideo(inputPath);
+    const pixels = width * height;
+    const ffArgs = ["-i", inputPath, "-y"];
+    if (duration > MAX_DURATION) {
+      const startTime = duration - MAX_DURATION;
+      ffArgs.push("-ss", String(startTime), "-t", String(MAX_DURATION));
+    }
+    if (pixels > MAX_PIXELS) {
+      const scale = Math.sqrt(MAX_PIXELS / pixels);
+      const newW = Math.floor((width * scale) / 2) * 2;
+      const newH = Math.floor((height * scale) / 2) * 2;
+      ffArgs.push("-vf", `scale=${newW}:${newH}`);
+    }
+    ffArgs.push("-c:v", "libx264", "-preset", "fast", "-crf", "23");
+    ffArgs.push("-c:a", "aac", "-b:a", "128k");
+    ffArgs.push(outputPath);
+    await execFileAsync("ffmpeg", ffArgs, { timeout: 120000 });
+    const storageKey = `uploads/${Date.now()}_${outName}`;
+    const presign = tosPresignPut(storageKey, "video/mp4");
+    const body = readFileSync(outputPath);
+    const upResp = await fetch(presign.uploadUrl, { method: "PUT", headers: { "Content-Type": "video/mp4" }, body });
+    if (!upResp.ok) throw new Error(`TOS upload failed: ${upResp.status}`);
+    res.json({ fileUrl: presign.fileUrl });
+  } catch (err) {
+    console.error("Video processing error (TOS):", err);
+    res.status(500).json({ error: "Video processing failed: " + err.message });
+  } finally {
+    try { unlinkSync(inputPath); } catch {}
+    try { unlinkSync(outputPath); } catch {}
+  }
+});
+
 // ── Volcengine Asset API (server-side AK/SK from env) ──
 const VOLC_VERSION = "2024-01-01";
 const VOLC_AK = process.env.VOLC_AK;
