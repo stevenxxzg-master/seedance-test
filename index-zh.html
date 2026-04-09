@@ -1187,7 +1187,7 @@ async function uploadKfFile(which, file) {
   if (!obj) return;
   try {
     const presignResp = await fetch("/api/presign", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", "X-Storage": "tos" },
       body: JSON.stringify({ filename: file.name, contentType: file.type }),
     });
     if (!presignResp.ok) throw new Error("Failed to get upload URL");
