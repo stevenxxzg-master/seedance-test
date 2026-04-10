@@ -1421,7 +1421,7 @@ const STATUS_MAP = {"IN_PROGRESS":"running","SUCCESS":"completed","FAILED":"fail
 
 function parseResponse(raw) {
   const wrap = raw.data||raw; const inner = wrap.data||wrap;
-  return { id: wrap.task_id||inner.id||raw.id, status: STATUS_MAP[wrap.status||inner.status||raw.status||"submitted"]||(wrap.status||"submitted").toLowerCase(), progress: wrap.progress||null, videoUrl: findVideoUrl(raw) };
+  return { id: inner.id||wrap.task_id||raw.id, status: STATUS_MAP[inner.status||wrap.status||raw.status||"submitted"]||(wrap.status||"submitted").toLowerCase(), progress: wrap.progress||null, videoUrl: findVideoUrl(raw) };
 }
 
 function findVideoUrl(d) {
