@@ -1211,7 +1211,7 @@ function apiHeaders() {
   const base = document.getElementById("i-base").value.trim();
   const h = { "Content-Type": "application/json" };
   if (key) h["X-Api-Key"] = key;
-  if (base) h["X-Api-Base"] = base;
+  if (base) h["X-Api-Base"] = encodeURI(base);
   return h;
 }
 

@@ -44,7 +44,8 @@ function getKey(req) {
 }
 
 function getBase(req) {
-  const base = req.headers["x-api-base"] || API_BASE;
+  const raw = req.headers["x-api-base"] || API_BASE;
+  const base = decodeURI(raw);
   // Allowlist: only https to public domains
   let parsed;
   try {
