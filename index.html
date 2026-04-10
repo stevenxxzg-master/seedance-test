@@ -1362,8 +1362,8 @@ async function runSubmit(task, body) {
         task.progress = parsed.progress;
         task.response = data;
         task.videoUrl = parsed.videoUrl;
-        task.startTime = Date.now(); // reset timer to generation start
-        if (["completed","failed","cancelled"].includes(parsed.status)) task.endTime = Date.now();
+        if (parsed.createdAt) task.apiCreatedAt = parsed.createdAt;
+        if (parsed.updatedAt) task.apiUpdatedAt = parsed.updatedAt;
         saveTasks(); renderTasks();
         if (parsed.id) startPolling();
         return;
@@ -1384,7 +1384,7 @@ async function runSubmit(task, body) {
 
 // ── Task management ──
 function saveTasks() {
-  const slim = tasks.filter(t => t.id).slice(0, MAX_TASKS).map(t => ({ id:t.id, status:t.status, progress:t.progress, created:t.created, startTime:t.startTime, videoUrl:t.videoUrl, endTime:t.endTime, response:t.response, input:t.input }));
+  const slim = tasks.filter(t => t.id).slice(0, MAX_TASKS).map(t => ({ id:t.id, status:t.status, progress:t.progress, created:t.created, apiCreatedAt:t.apiCreatedAt, apiUpdatedAt:t.apiUpdatedAt, videoUrl:t.videoUrl, response:t.response, input:t.input }));
   localStorage.setItem("tasks", JSON.stringify(slim));
 }
 
@@ -1405,8 +1405,9 @@ async function pollAll() {
         if (task.status !== parsed.status || task.progress !== parsed.progress || (!task.videoUrl && parsed.videoUrl)) changed = true;
         task.status = parsed.status; task.progress = parsed.progress;
         if (!task.videoUrl) task.videoUrl = parsed.videoUrl;
+        if (parsed.createdAt) task.apiCreatedAt = parsed.createdAt;
+        if (parsed.updatedAt) task.apiUpdatedAt = parsed.updatedAt;
         task.pollErrors = 0;
-        if (TERMINAL.includes(task.status) && !task.endTime) task.endTime = Date.now();
       } else {
         task.pollErrors = (task.pollErrors||0)+1;
         if (task.pollErrors >= 5) { task.status="failed"; task.endTime=Date.now(); changed=true; }
@@ -1424,7 +1425,7 @@ const STATUS_MAP = {"IN_PROGRESS":"running","SUCCESS":"completed","FAILED":"fail
 
 function parseResponse(raw) {
   const wrap = raw.data||raw; const inner = wrap.data||wrap;
-  return { id: inner.id||wrap.task_id||raw.id, status: STATUS_MAP[inner.status||wrap.status||raw.status||"submitted"]||(wrap.status||"submitted").toLowerCase(), progress: wrap.progress||null, videoUrl: findVideoUrl(raw) };
+  return { id: inner.id||wrap.task_id||raw.id, status: STATUS_MAP[inner.status||wrap.status||raw.status||"submitted"]||(wrap.status||"submitted").toLowerCase(), progress: wrap.progress||null, videoUrl: findVideoUrl(raw), createdAt: inner.created_at||wrap.created_at||0, updatedAt: inner.updated_at||wrap.updated_at||0 };
 }
 
 function findVideoUrl(d) {
@@ -1432,9 +1433,9 @@ function findVideoUrl(d) {
   const m=JSON.stringify(d).match(/(https?:\/\/[^"\\]+\.mp4[^"\\]*)/); return m?m[1]:null;
 }
 
-function fmtTime(ms){if(ms<0)ms=0;const s=Math.floor(ms/1000),m=Math.floor(s/60);return m>0?`${m}m ${s%60}s`:`${s}s`}
+function fmtSec(s){if(s<0)s=0;s=Math.floor(s);const m=Math.floor(s/60);return m>0?`${m}m ${s%60}s`:`${s}s`}
 const TERMINAL_STATES=["completed","failed","cancelled"];
-function elapsed(t){const start=t.startTime||t.created;const end=t.endTime||Date.now();return fmtTime(end-start)}
+function elapsed(t){if(t.apiCreatedAt){const end=t.apiUpdatedAt||Math.floor(Date.now()/1000);return fmtSec(end-t.apiCreatedAt)}const start=t.startTime||t.created;return fmtSec(((t.endTime||Date.now())-start)/1000)}
 
 function renderTaskInput(t) {
   if (!t.input) return '';
