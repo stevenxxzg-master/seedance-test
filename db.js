@@ -20,12 +20,24 @@ db.exec(`
     asset_id TEXT DEFAULT NULL,
     asset_status TEXT NOT NULL DEFAULT 'none',
     thumb_url TEXT DEFAULT '',
+    content_hash TEXT DEFAULT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
   CREATE INDEX IF NOT EXISTS idx_assets_user ON assets(user_hash);
   CREATE INDEX IF NOT EXISTS idx_assets_url ON assets(storage_url);
 `);
+
+// Migrate existing tables to add content_hash column
+try {
+  const cols = db.prepare("PRAGMA table_info(assets)").all();
+  if (!cols.some((c) => c.name === "content_hash")) {
+    db.exec("ALTER TABLE assets ADD COLUMN content_hash TEXT DEFAULT NULL");
+  }
+} catch (e) {
+  console.warn("[DB] Migration check failed:", e.message);
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_assets_hash ON assets(user_hash, content_hash)");
 
 export function hashApiKey(key) {
   return crypto.createHash("sha256").update(key).digest("hex");
@@ -45,15 +57,44 @@ export function findAssetByUrl(userHash, storageUrl) {
   return stmtFindByUrl.get(userHash, storageUrl) || null;
 }
 
+const stmtFindByHash = db.prepare(
+  "SELECT * FROM assets WHERE user_hash = ? AND content_hash = ? LIMIT 1"
+);
+export function findAssetByHash(userHash, contentHash) {
+  if (!contentHash) return null;
+  return stmtFindByHash.get(userHash, contentHash) || null;
+}
+
 const stmtInsert = db.prepare(`
-  INSERT INTO assets (user_hash, name, type, storage_url, thumb_url)
-  VALUES (?, ?, ?, ?, ?)
+  INSERT INTO assets (user_hash, name, type, storage_url, thumb_url, content_hash)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+const stmtUpdateUrl = db.prepare(`
+  UPDATE assets SET storage_url = ?, name = ?, updated_at = unixepoch()
+  WHERE id = ? AND user_hash = ?
 `);
 const stmtGetById = db.prepare("SELECT * FROM assets WHERE id = ?");
-export function insertAsset({ userHash, name, type, storageUrl, thumbUrl }) {
-  const existing = findAssetByUrl(userHash, storageUrl);
-  if (existing) return existing;
-  const info = stmtInsert.run(userHash, name || "", type || "image", storageUrl, thumbUrl || "");
+export function insertAsset({ userHash, name, type, storageUrl, thumbUrl, contentHash }) {
+  // 1. Hash-based dedup (preferred)
+  if (contentHash) {
+    const existing = findAssetByHash(userHash, contentHash);
+    if (existing) {
+      // If stored URL is stale (points to /uploads/ which gets cleaned daily),
+      // refresh it with the new storage_url
+      if (existing.storage_url && existing.storage_url.includes("/uploads/")) {
+        stmtUpdateUrl.run(storageUrl, name || existing.name, existing.id, userHash);
+        return stmtGetById.get(existing.id);
+      }
+      return existing;
+    }
+  }
+  // 2. URL-based dedup (fallback for legacy records without hash)
+  const byUrl = findAssetByUrl(userHash, storageUrl);
+  if (byUrl) return byUrl;
+  // 3. Insert new
+  const info = stmtInsert.run(
+    userHash, name || "", type || "image", storageUrl, thumbUrl || "", contentHash || null
+  );
   return stmtGetById.get(info.lastInsertRowid);
 }
 

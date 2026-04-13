@@ -159,6 +159,20 @@ a.s:hover{border-color:#999}
 .asset-card.uploading .asset-card-name{background:linear-gradient(transparent,rgba(0,0,0,.4))}
 .asset-empty{padding:24px 20px;text-align:center;color:#bbb;font-size:12px;grid-column:1/-1}
 
+/* ── Toast notifications ── */
+#toast-container{position:fixed;bottom:24px;right:24px;z-index:2000;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{min-width:240px;max-width:360px;padding:10px 14px;background:#fff;border:1px solid #eceef2;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.12);display:flex;align-items:center;gap:10px;font-size:12px;color:#333;pointer-events:auto;opacity:0;transform:translateX(20px);transition:opacity .25s ease,transform .25s ease}
+.toast.show{opacity:1;transform:translateX(0)}
+.toast-icon{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+.toast-icon.info{background:#eef6ff;color:#0969da}
+.toast-icon.success{background:#eafbef;color:#1a7f37}
+.toast-icon.warn{background:#fef9e7;color:#9a6700}
+.toast-body{flex:1;min-width:0;line-height:1.4}
+.toast-title{font-weight:600;color:#1a1a1a}
+.toast-desc{color:#888;font-size:11px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toast-close{background:none;border:none;color:#ccc;cursor:pointer;font-size:14px;padding:0;width:18px;height:18px;line-height:1;flex-shrink:0}
+.toast-close:hover{color:#888}
+
 /* ── Tasks ── */
 .sl{font-size:18px;font-weight:600;color:#1a1a1a}
 .task{padding:0;border:1px solid #eceef2;margin-bottom:10px;border-radius:14px;background:#fff;overflow:hidden;transition:border-color .15s}
@@ -1257,8 +1271,9 @@ async function handleFileForItem(id, file) {
   renderStack();
 
   try {
-    let fileUrl;
+    let fileUrl, hash, reused = false, reusedAsset = null;
     if (item.type === "video") {
+      // Video path: server-side ffmpeg compression, then fetch compressed blob to hash + upload to assets/
       const form = new FormData();
       form.append("file", file);
       const resp = await fetch("/api/upload/video", { method: "POST", body: form });
@@ -1267,26 +1282,20 @@ async function handleFileForItem(id, file) {
         throw new Error(err.error || `Upload failed: ${resp.status}`);
       }
       ({ fileUrl } = await resp.json());
+      // Video is already in uploads/ — try to register with hash if possible (skip hash for now)
     } else {
-      const presignResp = await fetch("/api/cos/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, contentType: file.type }),
-      });
-      if (!presignResp.ok) throw new Error("Failed to get upload URL");
-      const presign = await presignResp.json();
-      fileUrl = presign.fileUrl;
-      const uploadResp = await fetch(presign.uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": file.type },
-        body: file,
-      });
-      if (!uploadResp.ok) throw new Error(`Upload failed: ${uploadResp.status}`);
+      // Image / audio: use hash-based uploader
+      const result = await uploadAssetWithHash(file);
+      fileUrl = result.fileUrl;
+      hash = result.hash;
+      reused = result.reused;
+      reusedAsset = result.asset || null;
     }
     item.url = fileUrl;
     item.cosUrl = fileUrl;
-    item.assetUrl = ""; // Clear stale asset — new file needs fresh asset if needed
-    console.log(`[Upload] ${item.type} uploaded to COS:`, fileUrl);
+    item.contentHash = hash || "";
+    item.assetUrl = reusedAsset?.asset_id || ""; // Reuse existing asset_id if found
+    console.log(`[Upload] ${item.type} uploaded:`, fileUrl, reused ? "(reused)" : "");
     renderStack();
     registerAssetOnUpload(item);
   } catch (err) {
@@ -1346,19 +1355,13 @@ async function uploadKfFile(which, file) {
   const obj = which === "first" ? kfFirst : kfLast;
   if (!obj) return;
   try {
-    const presignResp = await fetch("/api/tos/presign", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, contentType: file.type }),
-    });
-    if (!presignResp.ok) throw new Error("Failed to get upload URL");
-    const presign = await presignResp.json();
-    const uploadResp = await fetch(presign.uploadUrl, {
-      method: "PUT", headers: { "Content-Type": file.type }, body: file,
-    });
-    if (!uploadResp.ok) throw new Error(`Upload failed: ${uploadResp.status}`);
-    obj.url = presign.fileUrl;
-    obj.cosUrl = presign.fileUrl;
-    registerAssetOnUpload({ name: file.name, type: "image", cosUrl: presign.fileUrl, url: presign.fileUrl, thumbUrl: presign.fileUrl });
+    const { fileUrl, hash, reused, asset } = await uploadAssetWithHash(file);
+    obj.url = fileUrl;
+    obj.cosUrl = fileUrl;
+    obj.contentHash = hash;
+    obj.assetUrl = asset?.asset_id || "";
+    console.log(`[KF Upload] ${which} uploaded:`, fileUrl, reused ? "(reused)" : "");
+    registerAssetOnUpload({ name: file.name, type: "image", cosUrl: fileUrl, url: fileUrl, contentHash: hash });
   } catch (err) {
     alert("上传失败：" + (err.message || "请重试"));
     if (which === "first") kfFirst = null; else kfLast = null;
@@ -1807,6 +1810,99 @@ function assetHeaders() {
   return { "X-Api-Key": document.getElementById("i-key").value.trim(), "Content-Type": "application/json" };
 }
 
+// ── Toast notifications ──
+function showToast({ title, desc, type = "info", duration = 3500 }) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.className = "toast";
+  const icons = { info: "ℹ", success: "✓", warn: "!" };
+  el.innerHTML = `
+    <span class="toast-icon ${type}">${icons[type] || icons.info}</span>
+    <div class="toast-body">
+      <div class="toast-title">${esc(title || "")}</div>
+      ${desc ? `<div class="toast-desc">${esc(desc)}</div>` : ""}
+    </div>
+    <button class="toast-close" type="button">×</button>
+  `;
+  container.appendChild(el);
+  // Trigger enter animation
+  requestAnimationFrame(() => el.classList.add("show"));
+  const close = () => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 300);
+  };
+  el.querySelector(".toast-close").addEventListener("click", close);
+  if (duration > 0) setTimeout(close, duration);
+}
+
+// Compute SHA-256 hex of a File/Blob
+async function sha256Hex(file) {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Lookup asset on server by content hash; returns asset record or null
+async function lookupAssetByHash(hash) {
+  const key = document.getElementById("i-key").value.trim();
+  if (!key) return null;
+  try {
+    const r = await fetch(`/api/assets/by-hash/${hash}`, { headers: { "X-Api-Key": key } });
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data.asset || null;
+  } catch { return null; }
+}
+
+// Unified uploader: computes hash, checks server dedup, presigns with deterministic key,
+// uploads via XHR (with progress callback). Returns { fileUrl, hash, reused, asset? }.
+async function uploadAssetWithHash(file, onProgress) {
+  const hash = await sha256Hex(file);
+  // 1) Server-side dedup
+  const existing = await lookupAssetByHash(hash);
+  if (existing && existing.storage_url) {
+    const statusDesc = existing.asset_status === "ready"
+      ? "已复用素材（已加白）"
+      : "已复用素材";
+    showToast({
+      type: "success",
+      title: statusDesc,
+      desc: file.name || existing.name || "",
+    });
+    return { fileUrl: existing.storage_url, hash, reused: true, asset: existing };
+  }
+  // 2) Presign with deterministic key (assets/{hash}.{ext})
+  const ext = ((file.name || "file").split(".").pop() || "bin").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const clientKey = `assets/${hash}.${ext || "bin"}`;
+  const presignResp = await fetch("/api/cos/presign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name || `${hash}.${ext || "bin"}`,
+      contentType: file.type || "application/octet-stream",
+      prefix: "assets",
+      key: clientKey,
+    }),
+  });
+  if (!presignResp.ok) throw new Error("获取上传地址失败");
+  const presign = await presignResp.json();
+  // 3) XHR PUT with progress
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", presign.uploadUrl);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("上传失败: " + xhr.status));
+    xhr.onerror = () => reject(new Error("网络错误"));
+    xhr.send(file);
+  });
+  return { fileUrl: presign.fileUrl, hash, reused: false };
+}
+
 function toggleAssetPanel(pillEl) {
   const panel = document.getElementById("asset-panel");
   const compose = document.getElementById("compose-box");
@@ -1852,11 +1948,13 @@ function renderAssetGrid() {
   const statusLabel = { ready: "已加白", pending: "加白中…", failed: "失败", none: "未加白", uploading: "上传中…" };
   el.innerHTML = assetLibrary.map(a => {
     const isUploading = a.asset_status === "uploading";
+    // Uploading placeholders use local blob; saved assets always use storage_url
+    const thumbSrc = isUploading ? a.thumb_url : a.storage_url;
     const thumb = a.type === "audio"
       ? `<div class="asset-card-icon">🎵</div>`
       : a.type === "video"
-        ? `<video src="${esc(a.thumb_url || a.storage_url)}" muted preload="metadata"></video>`
-        : `<img src="${esc(a.thumb_url || a.storage_url)}">`;
+        ? `<video src="${esc(thumbSrc)}" muted preload="metadata"></video>`
+        : `<img src="${esc(thumbSrc)}">`;
     const canWl = !isUploading && (a.asset_status === "none" || a.asset_status === "failed");
     const wlOverlay = canWl
       ? `<div class="asset-card-wl show"><button onclick="event.stopPropagation();whitelistAsset(${a.id})">加白</button></div>` : '';
@@ -1889,62 +1987,43 @@ async function handleAssetUpload(files) {
     const type = file.type.startsWith("video") ? "video" : file.type.startsWith("audio") ? "audio" : "image";
     const placeholderId = "_up_" + Date.now() + Math.random().toString(36).slice(2, 6);
     const localUrl = URL.createObjectURL(file);
-    const placeholder = { id: placeholderId, name: file.name, type, storage_url: "", thumb_url: localUrl, asset_status: "uploading", _progress: 0 };
+    const placeholder = { id: placeholderId, name: file.name, type, storage_url: localUrl, thumb_url: localUrl, asset_status: "uploading", _progress: 0 };
     assetLibrary.unshift(placeholder);
-    console.log("[AssetUpload] Added placeholder", placeholderId, "assetLibrary size:", assetLibrary.length);
     renderAssetGrid();
     try {
-      console.log("[AssetUpload] Requesting presign URL...");
-      const presignResp = await fetch("/api/cos/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, contentType: file.type, prefix: "assets" }),
+      const { fileUrl, hash, reused, asset } = await uploadAssetWithHash(file, (pct) => {
+        const bar = document.getElementById("prog-" + placeholderId);
+        if (bar) bar.style.width = pct + "%";
+        placeholder._progress = pct;
       });
-      if (!presignResp.ok) { console.error("[AssetUpload] Presign failed:", presignResp.status); throw new Error("获取上传地址失败"); }
-      const presign = await presignResp.json();
-      console.log("[AssetUpload] Got presign, uploading to storage:", presign.fileUrl);
-      await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", presign.uploadUrl);
-        xhr.setRequestHeader("Content-Type", file.type);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const pct = Math.round(e.loaded / e.total * 100);
-            const bar = document.getElementById("prog-" + placeholderId);
-            if (bar) bar.style.width = pct + "%";
-            placeholder._progress = pct;
-            if (pct === 100 || pct % 25 === 0) console.log("[AssetUpload] Progress:", pct + "%");
-          }
-        };
-        xhr.onload = () => {
-          console.log("[AssetUpload] Upload XHR done, status:", xhr.status);
-          xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("上传失败: " + xhr.status));
-        };
-        xhr.onerror = () => { console.error("[AssetUpload] XHR network error"); reject(new Error("网络错误")); };
-        xhr.send(file);
-      });
-      console.log("[AssetUpload] Storage upload complete, registering asset in DB...");
-      // Register in DB
-      const regResp = await fetch("/api/assets", {
-        method: "POST", headers: assetHeaders(),
-        body: JSON.stringify({ name: file.name, type, storageUrl: presign.fileUrl, thumbUrl: presign.fileUrl }),
-      });
-      const idx = assetLibrary.findIndex(a => a.id === placeholderId);
-      console.log("[AssetUpload] DB register response:", regResp.status, "placeholder idx:", idx);
-      if (regResp.ok) {
-        const data = await regResp.json();
-        console.log("[AssetUpload] DB registered:", data.asset?.id, data.asset?.name);
-        if (data.asset && idx >= 0) assetLibrary[idx] = data.asset;
-        else if (data.asset) assetLibrary.unshift(data.asset);
+      if (reused && asset) {
+        // Already in library — promote to top and drop placeholder
+        const idx = assetLibrary.findIndex(a => a.id === placeholderId);
+        if (idx >= 0) assetLibrary.splice(idx, 1);
+        // Remove any existing duplicate, then unshift
+        const existingIdx = assetLibrary.findIndex(a => a.id === asset.id);
+        if (existingIdx >= 0) assetLibrary.splice(existingIdx, 1);
+        assetLibrary.unshift(asset);
+        console.log("[AssetUpload] Reused existing asset:", asset.id);
       } else {
-        const errText = await regResp.text();
-        console.error("[AssetUpload] DB register failed:", errText);
-        throw new Error("注册素材失败: " + errText);
+        // Register in DB with contentHash
+        const regResp = await fetch("/api/assets", {
+          method: "POST", headers: assetHeaders(),
+          body: JSON.stringify({ name: file.name, type, storageUrl: fileUrl, contentHash: hash }),
+        });
+        const idx = assetLibrary.findIndex(a => a.id === placeholderId);
+        if (regResp.ok) {
+          const data = await regResp.json();
+          if (data.asset && idx >= 0) assetLibrary[idx] = data.asset;
+          else if (data.asset) assetLibrary.unshift(data.asset);
+        } else {
+          const errText = await regResp.text();
+          throw new Error("注册素材失败: " + errText);
+        }
+        if (idx >= 0 && assetLibrary[idx].id === placeholderId) assetLibrary.splice(idx, 1);
       }
-      if (idx >= 0 && assetLibrary[idx].id === placeholderId) assetLibrary.splice(idx, 1);
-      console.log("[AssetUpload] Done. assetLibrary size:", assetLibrary.length);
     } catch (e) {
-      console.error("[AssetUpload] Upload failed:", file.name, e.message, e);
+      console.error("[AssetUpload] Upload failed:", file.name, e.message);
       const idx = assetLibrary.findIndex(a => a.id === placeholderId);
       if (idx >= 0) assetLibrary.splice(idx, 1);
       alert("上传失败：" + file.name + " — " + e.message);
@@ -2039,7 +2118,7 @@ async function registerAssetOnUpload(item) {
         name: item.name || "",
         type: item.type || "image",
         storageUrl: item.cosUrl || item.url,
-        thumbUrl: item.thumbUrl || item.cosUrl || item.url,
+        contentHash: item.contentHash || "",
       }),
     });
     if (resp.ok) {
@@ -2097,5 +2176,8 @@ document.addEventListener("keydown", e => {
     </div>
   </div>
 </div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
 </body>
 </html>

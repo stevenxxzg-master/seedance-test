@@ -11,7 +11,7 @@ import { createRequire } from "module";
 import multer from "multer";
 import os from "os";
 import {
-  hashApiKey, listAssets, findAssetByUrl, insertAsset,
+  hashApiKey, listAssets, findAssetByUrl, findAssetByHash, insertAsset,
   updateAssetStatus, deleteAsset as dbDeleteAsset,
   getPrefs, setPrefs,
 } from "./db.js";
@@ -156,14 +156,17 @@ function isTosOrigin(req) {
 // Get presigned upload URL — auto-routes COS or TOS based on origin
 app.post("/api/presign", (req, res, next) => { req.url = "/api/cos/presign"; next(); });
 app.post("/api/cos/presign", (req, res) => {
-  const { filename, contentType, prefix } = req.body;
+  const { filename, contentType, prefix, key: clientKey } = req.body;
   if (!filename || !contentType) {
     return res.status(400).json({ error: "filename and contentType required" });
   }
 
   const pfx = prefix || "uploads";
   const ext = filename.split(".").pop() || "bin";
-  const key = `${pfx}/${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`;
+  // Allow client to provide a deterministic key (e.g. assets/{hash}.{ext}) for dedup
+  const key = clientKey && /^[a-zA-Z0-9/_\-.]+$/.test(clientKey)
+    ? clientKey
+    : `${pfx}/${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`;
 
   // TOS mode: auto-detect from origin or explicit storage param
   if (isTosOrigin(req) && TOS_AK && TOS_SK) {
@@ -552,10 +555,25 @@ app.get("/api/assets", (req, res) => {
 app.post("/api/assets", (req, res) => {
   try {
     const userHash = getUserHash(req);
-    const { name, type, storageUrl, thumbUrl } = req.body;
+    const { name, type, storageUrl, thumbUrl, contentHash } = req.body;
     if (!storageUrl) return res.status(400).json({ error: "storageUrl required" });
-    const asset = insertAsset({ userHash, name, type, storageUrl, thumbUrl });
+    const asset = insertAsset({ userHash, name, type, storageUrl, thumbUrl, contentHash });
     res.json({ asset });
+  } catch (err) {
+    res.status(err.message === "API Key is required" ? 401 : 500).json({ error: err.message });
+  }
+});
+
+// Lookup asset by content hash (for dedup before upload)
+app.get("/api/assets/by-hash/:hash", (req, res) => {
+  try {
+    const userHash = getUserHash(req);
+    const asset = findAssetByHash(userHash, req.params.hash);
+    // Treat stale uploads/ URLs as invalid (daily cleanup wipes them)
+    if (asset && asset.storage_url && asset.storage_url.includes("/uploads/")) {
+      return res.json({ asset: null });
+    }
+    res.json({ asset: asset || null });
   } catch (err) {
     res.status(err.message === "API Key is required" ? 401 : 500).json({ error: err.message });
   }
