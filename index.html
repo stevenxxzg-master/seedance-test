@@ -610,6 +610,19 @@ async function loadPrefs() {
 
   // Setup prompt editor events
   const ta = document.getElementById("i-prompt");
+  // Gate: require API key before typing in prompt
+  ta.addEventListener("mousedown", (e) => {
+    if (!document.getElementById("i-key").value.trim()) {
+      e.preventDefault();
+      showKeyModal(() => ta.focus());
+    }
+  });
+  ta.addEventListener("focus", () => {
+    if (!document.getElementById("i-key").value.trim()) {
+      ta.blur();
+      showKeyModal(() => ta.focus());
+    }
+  });
   ta.addEventListener("input", onPromptInput);
   ta.addEventListener("keydown", onPromptKeydown);
   // Paste as plain text
@@ -1067,6 +1080,7 @@ function detectFileType(file) {
 }
 
 function pickFile() {
+  if (!requireApiKey(pickFile)) return;
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ALL_ACCEPT;
@@ -1298,6 +1312,7 @@ async function handleFileForItem(id, file) {
 
 // ── Keyframe mode ──
 function pickKfFile(which) {
+  if (!requireApiKey(() => pickKfFile(which))) return;
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ACCEPT.image;
@@ -1895,12 +1910,13 @@ function toggleAssetPanel(pillEl) {
     panel.classList.remove("open");
     compose.classList.remove("asset-open");
     if (pillEl) pillEl.classList.remove("active");
-  } else {
-    panel.classList.add("open");
-    compose.classList.add("asset-open");
-    if (pillEl) pillEl.classList.add("active");
-    loadAssetLibrary();
+    return;
   }
+  if (!requireApiKey(() => toggleAssetPanel(pillEl))) return;
+  panel.classList.add("open");
+  compose.classList.add("asset-open");
+  if (pillEl) pillEl.classList.add("active");
+  loadAssetLibrary();
 }
 
 async function loadAssetLibrary() {
@@ -1960,7 +1976,11 @@ function renderAssetGrid() {
 async function handleAssetUpload(files) {
   if (!files || !files.length) return;
   const key = document.getElementById("i-key").value.trim();
-  if (!key) { alert("Please set your API Key first"); return; }
+  if (!key) {
+    const cached = Array.from(files);
+    showKeyModal(() => handleAssetUpload(cached));
+    return;
+  }
   const fileList = Array.from(files);
   setTimeout(() => { const el = document.getElementById("asset-file-input"); if (el) el.value = ""; }, 0);
   for (const file of fileList) {
@@ -2119,21 +2139,32 @@ function toggleAbout() {
   btn.textContent = open ? "About ▴" : "About ▾";
 }
 
-function showKeyModal() {
+let _afterKeyCallback = null;
+function showKeyModal(callback) {
+  _afterKeyCallback = typeof callback === "function" ? callback : null;
   document.getElementById("key-modal-ov").style.display = "flex";
   setTimeout(() => document.getElementById("modal-key-input").focus(), 50);
 }
 function closeKeyModal() {
   document.getElementById("key-modal-ov").style.display = "none";
   document.getElementById("modal-key-input").value = "";
+  _afterKeyCallback = null;
 }
 function saveKeyAndGenerate() {
   const key = document.getElementById("modal-key-input").value.trim();
   if (!key) { document.getElementById("modal-key-input").focus(); return; }
   document.getElementById("i-key").value = key;
   localStorage.setItem("apiKey", key);
+  const cb = _afterKeyCallback;
   closeKeyModal();
-  generate();
+  if (cb) cb(); else generate();
+}
+
+function requireApiKey(callback) {
+  const key = document.getElementById("i-key").value.trim();
+  if (key) return true;
+  showKeyModal(callback);
+  return false;
 }
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && document.getElementById("key-modal-ov").style.display === "flex") closeKeyModal();
