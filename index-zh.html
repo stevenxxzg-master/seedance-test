@@ -1115,6 +1115,12 @@ _compose.addEventListener("drop", (e) => {
   e.preventDefault();
   _dragCount = 0;
   _compose.classList.remove("drag-over");
+  // Asset library drag — insert existing asset without re-uploading
+  const assetId = e.dataTransfer.getData("application/x-asset-id");
+  if (assetId) {
+    insertSavedAsset(Number(assetId));
+    return;
+  }
   const files = e.dataTransfer.files;
   if (!files.length) return;
   let skipped = false;
@@ -2005,8 +2011,9 @@ function renderAssetGrid() {
     const progressBar = isUploading
       ? `<div class="asset-card-progress"><div class="asset-card-progress-bar" id="prog-${a.id}" style="width:${a._progress || 0}%"></div></div>` : '';
     const clickAttr = isUploading ? '' : `onclick="insertSavedAsset(${a.id})"`;
+    const dragAttrs = isUploading ? '' : `draggable="true" ondragstart="onAssetDragStart(event, ${a.id})"`;
     const removeBtn = isUploading ? '' : `<button class="asset-card-remove" onclick="event.stopPropagation();deleteLibraryAsset(${a.id})">✕</button>`;
-    return `<div class="asset-card${isUploading ? ' uploading' : ''}" ${clickAttr} title="${esc(a.name || '素材')}">
+    return `<div class="asset-card${isUploading ? ' uploading' : ''}" ${clickAttr} ${dragAttrs} title="${esc(a.name || '素材')}">
       ${thumb}
       <span class="asset-card-status ${a.asset_status}">${statusLabel[a.asset_status]}</span>
       ${removeBtn}
@@ -2015,6 +2022,11 @@ function renderAssetGrid() {
       ${progressBar}
     </div>`;
   }).join("");
+}
+
+function onAssetDragStart(e, id) {
+  e.dataTransfer.setData("application/x-asset-id", String(id));
+  e.dataTransfer.effectAllowed = "copy";
 }
 
 async function handleAssetUpload(files) {

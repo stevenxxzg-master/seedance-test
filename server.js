@@ -425,6 +425,23 @@ const ALLOWED_ASSET_ACTIONS = new Set([
   "GetAsset", "GetAssetGroup", "UpdateAssetGroup", "UpdateAsset",
 ]);
 
+// Normalize any proxy/Volc error shape into a plain string for logging/throwing.
+// Proxy returns `{error: {code, message, type}}` or `{error: "string"}`.
+// Volc SDK style returns `{ResponseMetadata: {Error: {Code, Message}}}`.
+function extractErrorMessage(data, fallback) {
+  if (!data) return fallback;
+  const e = data.error;
+  if (typeof e === "string" && e) return e;
+  if (e && typeof e === "object") {
+    if (typeof e.message === "string" && e.message) return e.message;
+    try { return JSON.stringify(e); } catch { /* fall through */ }
+  }
+  const volcErr = data.ResponseMetadata?.Error;
+  if (volcErr?.Message) return volcErr.Message;
+  if (volcErr?.Code) return volcErr.Code;
+  return fallback;
+}
+
 async function volcAssetCall(req, action, body) {
   const base = getBase(req);
   const key = getKey(req);
@@ -440,11 +457,14 @@ async function volcAssetCall(req, action, body) {
   const text = await resp.text();
   try { data = JSON.parse(text); } catch { data = { error: text }; }
   if (!resp.ok) {
-    const msg = data?.error || data?.ResponseMetadata?.Error?.Message || `HTTP ${resp.status}`;
-    throw new Error(msg);
+    throw new Error(extractErrorMessage(data, `HTTP ${resp.status}`));
+  }
+  // Proxy may return 200 with an error body
+  if (data?.error) {
+    throw new Error(extractErrorMessage(data, "Asset API error"));
   }
   if (data?.ResponseMetadata?.Error) {
-    throw new Error(data.ResponseMetadata.Error.Message || "Asset API error");
+    throw new Error(extractErrorMessage(data, "Asset API error"));
   }
   return data.Result || data;
 }
@@ -509,6 +529,17 @@ async function serverEnsureAssetGroup(req) {
   }
 }
 
+// Proxy does not implement GetAsset. Use ListAssets with Filter.Ids instead;
+// note GroupType is required by upstream Volc schema.
+async function pollAssetStatus(req, assetId) {
+  const list = await volcAssetCall(req, "ListAssets", {
+    Filter: { Ids: [assetId], GroupType: "AIGC" },
+    PageNumber: 1, PageSize: 5,
+  });
+  const item = (list.Items || []).find((a) => a.Id === assetId);
+  return item || null;
+}
+
 async function serverCreateImageAsset(req, url, name) {
   const groupId = await serverEnsureAssetGroup(req);
   const result = await volcAssetCall(req, "CreateAsset", {
@@ -518,17 +549,21 @@ async function serverCreateImageAsset(req, url, name) {
   const entry = _groupCache.get(cacheKey);
   if (entry) entry.count++;
   const assetId = result.Id;
-  // Poll GetAsset until Active (or Failed) — max 60s
+  // Poll ListAssets until Active (or Failed) — max 60s
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2000));
     try {
-      const got = await volcAssetCall(req, "GetAsset", { Id: assetId });
-      const status = got.Status;
+      const item = await pollAssetStatus(req, assetId);
+      if (!item) {
+        console.log(`[Asset ${assetId}] not visible yet via ListAssets, retrying`);
+        continue;
+      }
+      const status = item.Status;
       console.log(`[Asset ${assetId}] Status: ${status}`);
       if (status === "Active") return assetId;
       if (status === "Failed" || status === "failed") {
-        throw new Error("Asset whitelisting failed: " + (got.FailReason || "unknown"));
+        throw new Error("Asset whitelisting failed: " + (item.FailReason || "unknown"));
       }
     } catch (e) {
       if (e.message?.includes("Asset whitelisting failed")) throw e;
