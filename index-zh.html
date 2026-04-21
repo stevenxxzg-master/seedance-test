@@ -562,6 +562,8 @@ function applyPrefs(p) {
       tasks.push(t);
     }
     renderTasks();
+    // 服务端 prefs 加载后，为未完成任务启动轮询（刷新页面的关键修复点）
+    if (tasks.some(t => t.id && !["completed","failed","cancelled"].includes(t.status))) startPolling();
   }
 }
 
@@ -1594,7 +1596,7 @@ function saveTasks() {
   syncPrefs();
 }
 
-function startPolling() { if (pollTimer) return; pollTimer = setInterval(pollAll, 15000); }
+function startPolling() { if (pollTimer) return; pollAll(); pollTimer = setInterval(pollAll, 6000); }
 
 async function pollAll() {
   const TERMINAL = ["completed","failed","cancelled"];
@@ -1790,6 +1792,8 @@ function restoreInput(taskId) {
 
 function renderOneTask(t) {
   const SL = {submitting:"提交中",whitelisting:"素材加白中",submitted:"已提交",processing:"生成中",running:"生成中",completed:"完成",failed:"失败",cancelled:"已取消"};
+  // 兜底：只要有 videoUrl，状态一律视为完成，避免 UI 卡在"生成中"
+  if (t.videoUrl && t.status !== "completed") { t.status = "completed"; t.progress = null; }
   const isLive = t.status === "submitting" || t.status === "whitelisting";
   const liveIcon = isLive ? `<span style="display:inline-block;width:8px;height:8px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:3px"></span>` : "";
   const key = t.id || ("_" + t.created);
