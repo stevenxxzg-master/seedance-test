@@ -557,7 +557,7 @@ function applyPrefs(p) {
     tasks.length = 0;
     // Rescue: if a task was marked failed but has a videoUrl, restore to completed
     for (const t of p.tasks) {
-      if (t.status === "failed" && t.videoUrl) { t.status = "completed"; }
+      if (t.videoUrl) { t.status = "completed"; t.progress = null; }
       tasks.push(t);
     }
     renderTasks();
@@ -1599,9 +1599,11 @@ async function pollAll() {
       task.response = data;
       if (resp.ok && data.code !== "fail_to_fetch_task") {
         const parsed = parseResponse(data);
-        if (task.status !== parsed.status || task.progress !== parsed.progress || (!task.videoUrl && parsed.videoUrl)) changed = true;
-        task.status = parsed.status; task.progress = parsed.progress;
         if (!task.videoUrl) task.videoUrl = parsed.videoUrl;
+        const finalStatus = task.videoUrl ? "completed" : parsed.status;
+        if (task.status !== finalStatus || task.progress !== parsed.progress || (!task.videoUrl && parsed.videoUrl)) changed = true;
+        task.status = finalStatus;
+        task.progress = task.videoUrl ? null : parsed.progress;
         if (parsed.createdAt) task.apiCreatedAt = parsed.createdAt;
         if (parsed.updatedAt) task.apiUpdatedAt = parsed.updatedAt;
         task.pollErrors = 0;
