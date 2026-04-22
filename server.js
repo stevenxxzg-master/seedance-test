@@ -418,7 +418,11 @@ app.post("/api/tos/upload-video", upload.single("file"), async (req, res) => {
 // ── Volcengine Asset API (proxied via AnyFast gateway so calls are metered) ──
 // Calls go to `${X-Api-Base}/volc/asset/<Action>` with the user's own Bearer key,
 // instead of directly hitting open.volcengineapi.com with server-side AK/SK.
-const VOLC_PROXY_MODEL = "volc-asset";
+const VOLC_ASSET_MODEL = {
+  Image: "volc-asset",
+  Video: "volc-asset-video",
+  Audio: "volc-asset-audio",
+};
 
 const ALLOWED_ASSET_ACTIONS = new Set([
   "CreateAssetGroup", "CreateAsset", "ListAssetGroups", "ListAssets",
@@ -451,7 +455,7 @@ async function volcAssetCall(req, action, body) {
       "Content-Type": "application/json",
       Authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify({ ...body, model: VOLC_PROXY_MODEL }),
+    body: JSON.stringify({ ...body, model: VOLC_ASSET_MODEL[body.AssetType] || VOLC_ASSET_MODEL.Image }),
   });
   let data;
   const text = await resp.text();
@@ -540,10 +544,10 @@ async function pollAssetStatus(req, assetId) {
   return item || null;
 }
 
-async function serverCreateImageAsset(req, url, name) {
+async function serverCreateAsset(req, url, name, assetType = "Image") {
   const groupId = await serverEnsureAssetGroup(req);
   const result = await volcAssetCall(req, "CreateAsset", {
-    GroupId: groupId, URL: url, AssetType: "Image", Name: (name || "image").slice(0, 60),
+    GroupId: groupId, URL: url, AssetType: assetType, Name: (name || assetType.toLowerCase()).slice(0, 60),
   });
   const cacheKey = getBase(req) + "|" + getKey(req);
   const entry = _groupCache.get(cacheKey);
@@ -631,7 +635,8 @@ app.post("/api/assets/:id/whitelist", async (req, res) => {
     }
     updateAssetStatus(id, userHash, { assetId: null, assetStatus: "pending" });
     try {
-      const volcId = await serverCreateImageAsset(req, asset.storage_url, asset.name);
+      const assetType = asset.type === "video" ? "Video" : asset.type === "audio" ? "Audio" : "Image";
+      const volcId = await serverCreateAsset(req, asset.storage_url, asset.name, assetType);
       const updated = updateAssetStatus(id, userHash, {
         assetId: "asset://" + volcId, assetStatus: "ready",
       });
@@ -685,6 +690,7 @@ app.post("/api/assets/bulk-whitelist", async (req, res) => {
       }
     }
     const results = {};
+    const errors = {};
     for (const url of storageUrls) {
       const existing = findAssetByUrl(userHash, url);
       if (existing?.asset_status === "ready" && existing.asset_id) {
@@ -694,24 +700,27 @@ app.post("/api/assets/bulk-whitelist", async (req, res) => {
       const hint = meta.get(url) || {};
       const name = existing?.name || hint.name || deriveNameFromUrl(url);
       const contentHash = hint.contentHash || undefined;
-      const row = existing || insertAsset({ userHash, name, type: "image", storageUrl: url, thumbUrl: url, contentHash });
+      const hintType = hint.type || "image";
+      const row = existing || insertAsset({ userHash, name, type: hintType, storageUrl: url, thumbUrl: url, contentHash });
       // insertAsset may have returned an older record (hash-matched) that's already whitelisted.
       // Reuse its asset_id instead of burning another Volc call.
       if (row.asset_status === "ready" && row.asset_id) {
         results[url] = row.asset_id;
         continue;
       }
+      const assetType = (row.type || hintType) === "video" ? "Video" : (row.type || hintType) === "audio" ? "Audio" : "Image";
       try {
-        const volcId = await serverCreateImageAsset(req, url, name);
+        const volcId = await serverCreateAsset(req, url, name, assetType);
         updateAssetStatus(row.id, userHash, { assetId: "asset://" + volcId, assetStatus: "ready" });
         results[url] = "asset://" + volcId;
       } catch (e) {
         console.warn("[BulkWhitelist] Failed for", url, e.message);
         updateAssetStatus(row.id, userHash, { assetId: null, assetStatus: "failed" });
         results[url] = null;
+        errors[url] = e.message;
       }
     }
-    res.json({ results });
+    res.json({ results, errors });
   } catch (err) {
     res.status(err.message === "API Key is required" ? 401 : 500).json({ error: err.message });
   }

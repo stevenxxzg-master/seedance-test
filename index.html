@@ -350,6 +350,7 @@ a.s:hover{border-color:#999}
   </div>
   <!-- Resolution popup -->
   <div class="popup" id="res-popup">
+    <div class="popup-item" data-value="1080p" onclick="selectRes(this)" id="res-1080p"><span class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><circle cx="12" cy="12" r="4"/></svg></span> 1080p <span class="check" style="display:none">&#x2713;</span></div>
     <div class="popup-item selected" data-value="720p" onclick="selectRes(this)"><span class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><circle cx="12" cy="12" r="3"/></svg></span> 720p <span class="check">&#x2713;</span></div>
     <div class="popup-item" data-value="480p" onclick="selectRes(this)"><span class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><circle cx="12" cy="12" r="2"/></svg></span> 480p <span class="check" style="display:none">&#x2713;</span></div>
   </div>
@@ -421,8 +422,10 @@ a.s:hover{border-color:#999}
     <div class="about-prices">
       <div class="about-price"><div class="about-price-tier">480p T2V</div><div class="about-price-val">$0.13<span>/s</span></div></div>
       <div class="about-price"><div class="about-price-tier">720p T2V</div><div class="about-price-val">$0.28<span>/s</span></div></div>
+      <div class="about-price"><div class="about-price-tier">1080p T2V</div><div class="about-price-val">$0.36<span>/s</span></div></div>
       <div class="about-price"><div class="about-price-tier">480p V2V</div><div class="about-price-val">$0.14<span>/s</span></div></div>
       <div class="about-price"><div class="about-price-tier">720p V2V</div><div class="about-price-val">$0.30<span>/s</span></div></div>
+      <div class="about-price"><div class="about-price-tier">1080p V2V</div><div class="about-price-val">$0.36<span>/s</span></div></div>
     </div>
     <div class="about-section-title">Example prompt</div>
     <div class="about-example">
@@ -487,8 +490,8 @@ const DURATIONS = [5,6,7,8,9,10,11,12,13,14,15];
 // Base pricing CNY/s (Volcengine official, per 16:9 reference).
 // Overseas: CNY × 2 converted to USD at 7.2.
 const BASE_PRICE = {
-  "seedance":      { t2v: { "480p": 0.462, "720p": 0.994 },
-                     v2v: { "480p": 0.506, "720p": 1.088 } },
+  "seedance":      { t2v: { "480p": 0.462, "720p": 0.994, "1080p": 1.296 },
+                     v2v: { "480p": 0.506, "720p": 1.088, "1080p": 1.296 } },
   "seedance-fast": { t2v: { "480p": 0.372, "720p": 0.800 },
                      v2v: { "480p": 0.398, "720p": 0.856 } },
 };
@@ -538,6 +541,7 @@ function applyPrefs(p) {
     document.getElementById("model-label").textContent = p.model === "seedance-fast" ? "Seedance Fast" : "Seedance";
     document.getElementById("chk-seedance").style.display = p.model === "seedance" ? "" : "none";
     document.getElementById("chk-seedance-fast").style.display = p.model === "seedance-fast" ? "" : "none";
+    update1080pAvailability(p.model);
   }
   if (p.res) {
     document.getElementById("i-res").value = p.res;
@@ -580,9 +584,15 @@ async function loadPrefs() {
   // Only API key stays in localStorage
   const savedKey = localStorage.getItem("apiKey");
   if (savedKey) document.getElementById("i-key").value = savedKey;
+  let _keyChangeTimer = null;
   document.getElementById("i-key").addEventListener("input", () => {
     localStorage.setItem("apiKey", document.getElementById("i-key").value);
-    loadPrefs(); // reload prefs for new key
+    clearTimeout(_keyChangeTimer);
+    _keyChangeTimer = setTimeout(() => {
+      loadPrefs();
+      _assetLoading = false; // reset lock so key change always triggers a fresh load
+      loadAssetLibrary();
+    }, 600);
   });
 
   // Apply defaults then load server prefs
@@ -602,6 +612,7 @@ async function loadPrefs() {
   document.getElementById("model-label").textContent = m === "seedance-fast" ? "Seedance Fast" : "Seedance";
   document.getElementById("chk-seedance").style.display = m === "seedance" ? "" : "none";
   document.getElementById("chk-seedance-fast").style.display = m === "seedance-fast" ? "" : "none";
+  update1080pAvailability(m);
   const res = document.getElementById("i-res").value || "720p";
   document.getElementById("res-label").textContent = res;
   const r = document.getElementById("i-ratio").value || "1:1";
@@ -751,6 +762,19 @@ document.addEventListener("click", (e) => {
   }
 });
 
+function update1080pAvailability(model) {
+  const el = document.getElementById("res-1080p");
+  if (!el) return;
+  const isFast = model === "seedance-fast";
+  el.style.opacity = isFast ? "0.38" : "";
+  el.style.pointerEvents = isFast ? "none" : "";
+  el.title = isFast ? "1080p not available for Seedance Fast" : "";
+  // If 1080p is currently selected and we switched to fast, fall back to 720p
+  if (isFast && document.getElementById("i-res").value === "1080p") {
+    selectRes(document.querySelector("#res-popup .popup-item[data-value='720p']"));
+  }
+}
+
 function selectModel(el) {
   const v = el.dataset.value;
   document.getElementById("i-model").value = v;
@@ -758,6 +782,7 @@ function selectModel(el) {
   document.getElementById("model-label").textContent = v === "seedance-fast" ? "Seedance Fast" : "Seedance";
   document.getElementById("chk-seedance").style.display = v === "seedance" ? "" : "none";
   document.getElementById("chk-seedance-fast").style.display = v === "seedance-fast" ? "" : "none";
+  update1080pAvailability(v);
   closeAllPopups();
   updateCostLabel();
 }
@@ -891,7 +916,7 @@ function getPromptText() {
 
 function mentionThumbHtml(mType, url) {
   if (!url && mType !== "audio") return '';
-  if (mType === "video") return `<video class="mention-inline-thumb" src="${esc(url)}" muted preload="metadata"></video>`;
+  if (mType === "video") return `<img class="mention-inline-thumb" src="${esc(url)}">`;
   if (mType === "audio") return `<span class="mention-inline-thumb" style="display:inline-flex;align-items:center;justify-content:center;background:#f0f2f5;font-size:10px">🎵</span>`;
   return `<img class="mention-inline-thumb" src="${esc(url)}">`;
 }
@@ -1236,7 +1261,7 @@ function renderStack() {
     if (item.thumbUrl && item.type === "image") {
       inner = `<img src="${esc(item.thumbUrl)}">`;
     } else if (item.thumbUrl && item.type === "video") {
-      inner = `<video src="${esc(item.thumbUrl)}" muted></video>`;
+      inner = `<img src="${esc(item.thumbUrl)}">`;
     } else {
       const icons = { image: "🖼", video: "🎬", audio: "🎵" };
       inner = `<div class="stack-icon">${icons[item.type]}</div>`;
@@ -1285,22 +1310,56 @@ async function handleFileForItem(id, file) {
   if (item.thumbUrl && item.thumbUrl.startsWith("blob:")) {
     URL.revokeObjectURL(item.thumbUrl);
   }
-  if (item.type === "image" || item.type === "video") {
+  if (item.type === "image") {
     item.thumbUrl = URL.createObjectURL(file);
+  } else if (item.type === "video") {
+    // Extract first frame for thumbnail; fall back to raw video blob if canvas fails
+    item.thumbUrl = await extractVideoThumbnail(file) || URL.createObjectURL(file);
   }
   renderStack();
 
   try {
-    let fileUrl, hash, reused = false, reusedAsset = null;
+    let fileUrl, hash, reused = false, reusedAsset = null, thumbUrl = item.thumbUrl;
     if (item.type === "video") {
-      const form = new FormData();
-      form.append("file", file);
-      const resp = await fetch("/api/upload/video", { method: "POST", body: form });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || `Upload failed: ${resp.status}`);
+      // Dedup via first-frame hash before uploading
+      let thumbBlob = null;
+      if (item.thumbUrl && item.thumbUrl.startsWith("blob:")) {
+        try { thumbBlob = await fetch(item.thumbUrl).then(r => r.blob()); } catch { /* non-fatal */ }
       }
-      ({ fileUrl } = await resp.json());
+      if (thumbBlob) {
+        const thumbHash = await sha256Hex(thumbBlob);
+        const existing = await lookupAssetByHash(thumbHash);
+        if (existing && existing.storage_url) {
+          showToast({ type: "success", title: "Reused video", desc: file.name || existing.name || "" });
+          fileUrl = existing.storage_url;
+          hash = thumbHash;
+          reused = true;
+          reusedAsset = existing;
+          thumbUrl = existing.thumb_url || thumbUrl;
+          item.contentHash = thumbHash;
+        }
+      }
+      if (!reused) {
+        // Upload video and first-frame thumbnail in parallel
+        const form = new FormData();
+        form.append("file", file);
+        const thumbFile = thumbBlob
+          ? new File([thumbBlob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" })
+          : null;
+        const [videoResp, uploadedThumbUrl] = await Promise.all([
+          fetch("/api/upload/video", { method: "POST", body: form }),
+          thumbFile ? uploadAssetWithHash(thumbFile).then(r => r.fileUrl).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (!videoResp.ok) {
+          const err = await videoResp.json().catch(() => ({}));
+          throw new Error(err.error || `Upload failed: ${videoResp.status}`);
+        }
+        ({ fileUrl } = await videoResp.json());
+        if (uploadedThumbUrl) thumbUrl = uploadedThumbUrl;
+        // Store thumb hash for future dedup lookups
+        if (thumbBlob) hash = await sha256Hex(thumbBlob);
+        item.contentHash = hash || "";
+      }
     } else {
       const result = await uploadAssetWithHash(file);
       fileUrl = result.fileUrl;
@@ -1312,7 +1371,7 @@ async function handleFileForItem(id, file) {
     item.cosUrl = fileUrl;
     item.contentHash = hash || "";
     item.assetUrl = reusedAsset?.asset_id || "";
-    console.log(`[Upload] ${item.type} uploaded:`, fileUrl, reused ? "(reused)" : "");
+    item.persistedThumbUrl = thumbUrl || "";
     renderStack();
     if (reused && reusedAsset) {
       const existingIdx = assetLibrary.findIndex(a => a.id === reusedAsset.id);
@@ -1433,9 +1492,9 @@ function buildRequest() {
       if (item.type === "image") {
         content.push({ type: "image_url", image_url: { url: item.assetUrl || item.url }, role: "reference_image" });
       } else if (item.type === "video") {
-        content.push({ type: "video_url", video_url: { url: item.url }, role: "reference_video" });
+        content.push({ type: "video_url", video_url: { url: item.assetUrl || item.url }, role: "reference_video" });
       } else if (item.type === "audio") {
-        content.push({ type: "audio_url", audio_url: { url: item.url }, role: "reference_audio" });
+        content.push({ type: "audio_url", audio_url: { url: item.assetUrl || item.url }, role: "reference_audio" });
       }
     }
   }
@@ -1525,27 +1584,38 @@ async function runSubmit(task, body) {
           task.status = "whitelisting";
           task.whitelistStart = Date.now();
           renderTasks();
-          const imageUrls = currentBody.content.filter(c => c.type === "image_url").map(c => c.image_url.url).filter(u => !u.startsWith("asset://"));
-          if (imageUrls.length > 0) {
+          const needWhitelist = currentBody.content.filter(c => {
+            const url = c.image_url?.url || c.video_url?.url || c.audio_url?.url;
+            return url && !url.startsWith("asset://");
+          });
+          if (needWhitelist.length > 0) {
             try {
               const lookupItem = (u) => mediaItems.find(m => (m.cosUrl || m.url) === u)
                 || (kfFirst && (kfFirst.cosUrl || kfFirst.url) === u ? kfFirst : null)
                 || (kfLast && (kfLast.cosUrl || kfLast.url) === u ? kfLast : null);
-              const items = imageUrls.map(u => {
+              const storageUrls = needWhitelist.map(c => c.image_url?.url || c.video_url?.url || c.audio_url?.url);
+              const items = needWhitelist.map(c => {
+                const u = c.image_url?.url || c.video_url?.url || c.audio_url?.url;
                 const it = lookupItem(u);
-                return { url: u, contentHash: it?.contentHash || "", name: it?.name || "" };
+                const type = c.type === "video_url" ? "video" : c.type === "audio_url" ? "audio" : "image";
+                return { url: u, contentHash: it?.contentHash || "", name: it?.name || "", type };
               });
               const resp = await fetch("/api/assets/bulk-whitelist", {
                 method: "POST", headers: assetHeaders(),
-                body: JSON.stringify({ storageUrls: imageUrls, items }),
+                body: JSON.stringify({ storageUrls, items }),
               });
-              const { results } = await resp.json();
+              const { results, errors: wlErrors } = await resp.json();
               for (const [cosUrl, assetUrl] of Object.entries(results || {})) {
                 if (!assetUrl) continue;
                 const item = mediaItems.find(m => (m.cosUrl || m.url) === cosUrl);
                 if (item) item.assetUrl = assetUrl;
                 if (kfFirst && (kfFirst.cosUrl || kfFirst.url) === cosUrl) kfFirst.assetUrl = assetUrl;
                 if (kfLast && (kfLast.cosUrl || kfLast.url) === cosUrl) kfLast.assetUrl = assetUrl;
+              }
+              const firstErr = Object.values(wlErrors || {})[0];
+              if (firstErr) {
+                const isQuota = firstErr.includes("额度不足") || firstErr.includes("quota") || firstErr.includes("insufficient") || firstErr.includes("balance");
+                showToast({ type: "warn", title: isQuota ? "账户余额不足" : "素材加白失败", desc: isQuota ? "请前往 AnyFast 充值后重试" : firstErr, duration: 5000 });
               }
               loadAssetLibrary();
             } catch (e) { console.warn("[Generate] Bulk whitelist failed:", e.message); }
@@ -1893,6 +1963,34 @@ function showToast({ title, desc, type = "info", duration = 3500 }) {
   if (duration > 0) setTimeout(close, duration);
 }
 
+// Extract first frame of a video file as a PNG blob URL
+function extractVideoThumbnail(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.muted = true;
+    video.preload = "metadata";
+    video.src = url;
+    const cleanup = () => URL.revokeObjectURL(url);
+    video.onerror = () => { cleanup(); resolve(null); };
+    video.onloadeddata = () => {
+      video.currentTime = 0;
+    };
+    video.onseeked = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext("2d").drawImage(video, 0, 0);
+        canvas.toBlob((blob) => {
+          cleanup();
+          resolve(blob ? URL.createObjectURL(blob) : null);
+        }, "image/jpeg", 0.8);
+      } catch { cleanup(); resolve(null); }
+    };
+  });
+}
+
 // Compute SHA-256 hex of a File/Blob
 async function sha256Hex(file) {
   const buf = await file.arrayBuffer();
@@ -1973,7 +2071,7 @@ function toggleAssetPanel(pillEl) {
 
 async function loadAssetLibrary() {
   const key = document.getElementById("i-key").value.trim();
-  if (!key) { renderAssetGrid(); return; }
+  if (!key) { assetLibrary = []; renderAssetGrid(); return; }
   if (_assetLoading) return;
   _assetLoading = true;
   try {
@@ -2001,11 +2099,13 @@ function renderAssetGrid() {
   el.innerHTML = assetLibrary.map(a => {
     const isUploading = a.asset_status === "uploading";
     // Uploading placeholders use local blob; saved assets always use storage_url
-    const thumbSrc = isUploading ? a.thumb_url : a.storage_url;
+    const thumbSrc = isUploading ? a.thumb_url : (a.thumb_url || a.storage_url);
     const thumb = a.type === "audio"
       ? `<div class="asset-card-icon">🎵</div>`
       : a.type === "video"
-        ? `<video src="${esc(thumbSrc)}" muted preload="metadata"></video>`
+        ? (a.thumb_url
+            ? `<img src="${esc(a.thumb_url)}">`
+            : `<video src="${esc(thumbSrc)}#t=0.001" muted preload="metadata"></video>`)
         : `<img src="${esc(thumbSrc)}">`;
     const canWl = !isUploading && (a.asset_status === "none" || a.asset_status === "failed");
     const wlOverlay = canWl
@@ -2109,17 +2209,36 @@ async function whitelistAsset(id) {
   renderAssetGrid();
   try {
     const resp = await fetch(`/api/assets/${id}/whitelist`, { method: "POST", headers: assetHeaders() });
-    const data = await resp.json();
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const msg = data.error || `HTTP ${resp.status}`;
+      a.asset_status = "failed";
+      renderAssetGrid();
+      showToast({ type: "warn", title: "素材加白失败", desc: msg, duration: 4000 });
+      return;
+    }
     if (data.asset) {
       const idx = assetLibrary.findIndex(x => x.id === id);
       if (idx >= 0) assetLibrary[idx] = data.asset;
-      // Also update mediaItems if matched
       const item = mediaItems.find(m => (m.cosUrl || m.url) === data.asset.storage_url);
       if (item && data.asset.asset_id) item.assetUrl = data.asset.asset_id;
+      renderAssetGrid();
+    }
+    if (data.error) {
+      const msg = data.error;
+      const isQuota = msg.includes("额度不足") || msg.includes("quota") || msg.includes("insufficient") || msg.includes("balance");
+      showToast({
+        type: "warn",
+        title: isQuota ? "账户余额不足" : "素材加白失败",
+        desc: isQuota ? "请前往 AnyFast 充值后重试" : msg,
+        duration: 5000,
+      });
     }
   } catch (e) {
     console.warn("[AssetLib] Whitelist failed:", e.message);
     a.asset_status = "failed";
+    renderAssetGrid();
+    showToast({ type: "warn", title: "素材加白失败", desc: e.message, duration: 4000 });
   }
   renderAssetGrid();
 }
@@ -2172,6 +2291,7 @@ async function registerAssetOnUpload(item) {
         name: item.name || "",
         type: item.type || "image",
         storageUrl: item.cosUrl || item.url,
+        thumbUrl: item.persistedThumbUrl || "",
         contentHash: item.contentHash || "",
       }),
     });
