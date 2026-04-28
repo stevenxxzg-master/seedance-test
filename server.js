@@ -794,24 +794,38 @@ async function generateVideoThumb(asset) {
     if (written > MAX_THUMB_SOURCE_BYTES) {
       throw new Error(`Source too large after download: ${written} bytes`);
     }
-    await execFileAsync("ffmpeg", [
-      "-y", "-ss", "0", "-i", inputPath,
-      "-frames:v", "1", "-q:v", "3", "-vf", "scale='min(640,iw)':-2",
-      outputPath,
-    ], { timeout: 30000 });
+    try {
+      await execFileAsync("ffmpeg", [
+        "-y", "-ss", "0", "-i", inputPath,
+        "-frames:v", "1", "-q:v", "3", "-vf", "scale='min(640,iw)':-2",
+        outputPath,
+      ], { timeout: 30000 });
+    } catch (e) {
+      // ffmpeg can exit non-zero on truncated/unsupported files. Re-throw a clean
+      // error so the outer catch in the route can fall back to storage_url instead
+      // of letting an unhandled rejection bubble up.
+      throw new Error(`ffmpeg failed: ${e.message?.split("\n")[0] || e.code || "unknown"}`);
+    }
+    // Verify the output is actually there and non-empty before we try to upload.
+    // Without this check, ffmpeg silently producing nothing would cause the COS
+    // putObject stream to emit ENOENT asynchronously — which becomes an
+    // unhandled rejection and crashes the request.
+    let outStat;
+    try { outStat = statSync(outputPath); } catch { throw new Error("ffmpeg produced no output file"); }
+    if (!outStat || outStat.size === 0) throw new Error("ffmpeg produced empty output");
 
     const useTos = sourceUrl.includes(".volces.com");
     const key = `thumbs/${asset.id}_${Date.now()}.jpg`;
+    const body = readFileSync(outputPath);
     let thumbUrl;
     if (useTos && TOS_AK && TOS_SK) {
       const presign = tosPresignPut(key, "image/jpeg");
-      const body = readFileSync(outputPath);
       const upResp = await fetch(presign.uploadUrl, { method: "PUT", headers: { "Content-Type": "image/jpeg" }, body });
       if (!upResp.ok) throw new Error(`TOS thumb upload ${upResp.status}`);
       thumbUrl = presign.fileUrl;
     } else {
       await new Promise((resolve, reject) => {
-        cos.putObject({ Bucket: COS_BUCKET, Region: COS_REGION, Key: key, Body: createReadStream(outputPath), ContentType: "image/jpeg" }, (err) => err ? reject(err) : resolve());
+        cos.putObject({ Bucket: COS_BUCKET, Region: COS_REGION, Key: key, Body: body, ContentType: "image/jpeg" }, (err) => err ? reject(err) : resolve());
       });
       thumbUrl = `${COS_BASE_URL}/${key}`;
     }
