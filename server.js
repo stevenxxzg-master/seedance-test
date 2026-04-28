@@ -139,20 +139,18 @@ app.post("/api/generate", async (req, res) => {
       body: JSON.stringify(body),
     });
     const data = await resp.json();
-    // Log the URL slots whenever upstream rejects — makes "invalid url scheme" and
-    // similar BadRequest errors trivially diagnosable from container logs.
     if (!resp.ok) {
       const urls = (body.content || []).map((c) => {
         const slot = c.image_url || c.video_url || c.audio_url;
         return slot ? `${c.type}=${slot.url}` : c.type;
       });
-      console.warn(`[Generate] upstream ${resp.status}: ${data.error?.message || "?"} | urls=${JSON.stringify(urls)}`);
+      console.warn(`[Generate] upstream ${resp.status} | urls=${JSON.stringify(urls)} | err=${JSON.stringify(data).slice(0, 800)}`);
     }
     res.status(resp.status).json(data);
   } catch (err) {
-    res
-      .status(err.message === "API Key is required" ? 401 : 502)
-      .json({ error: err.message });
+    const status = err.statusCode
+      || (err.message === "API Key is required" ? 401 : 502);
+    res.status(status).json({ error: err.message });
   }
 });
 
@@ -594,6 +592,12 @@ async function pollAssetStatus(req, assetId) {
 }
 
 async function serverCreateAsset(req, url, name, assetType = "Image") {
+  // Reject upstream-bound bad URLs at the source. Volc CreateAsset will happily
+  // accept anything but later /generate calls fail with "invalid url scheme",
+  // by which point the bad asset_id is loose in the system. Catch it here.
+  if (typeof url !== "string" || !(url.startsWith("https://") || url.startsWith("http://"))) {
+    throw new Error(`serverCreateAsset rejected invalid URL: ${JSON.stringify(url)?.slice(0, 100)}`);
+  }
   const groupId = await serverEnsureAssetGroup(req);
   const result = await volcAssetCall(req, "CreateAsset", {
     GroupId: groupId, URL: url, AssetType: assetType, Name: (name || assetType.toLowerCase()).slice(0, 60),
@@ -681,7 +685,14 @@ async function verifyAndRehealAssetIds(req, originalBody) {
       PageNumber: 1, PageSize: Math.max(idsToCheck.length, 10),
     });
     for (const item of list.Items || []) {
-      if (item.Status === "Active" && item.Id) liveIds.add(item.Id);
+      // Active alone isn't enough — upstream sometimes reports Active for an asset
+      // whose stored URL is missing or has an invalid scheme (e.g. 'cos://...' or
+      // a bare host). Submitting that asset_id later trips the upstream guardrail
+      // with "invalid url scheme". Treat such assets as missing so we re-create.
+      const url = typeof item.URL === "string" ? item.URL : "";
+      const urlOk = url.startsWith("https://") || url.startsWith("http://");
+      if (item.Status === "Active" && item.Id && urlOk) liveIds.add(item.Id);
+      else if (item.Id) console.warn(`[VerifyAssets] upstream ${item.Id} unhealthy: status=${item.Status} url=${url.slice(0, 80)}`);
     }
   } catch (e) {
     // If the verify call itself fails we proceed optimistically — the upstream
@@ -692,6 +703,7 @@ async function verifyAndRehealAssetIds(req, originalBody) {
   }
 
   const userHash = getUserHash(req);
+  const orphans = [];
   for (const id of idsToCheck) {
     if (liveIds.has(id)) {
       _verifiedAssetIds.add(id);
@@ -701,8 +713,10 @@ async function verifyAndRehealAssetIds(req, originalBody) {
     const oldAssetUrl = "asset://" + id;
     const local = findAssetByAssetId(userHash, oldAssetUrl);
     if (!local || !local.storage_url) {
-      // No local record to recover from; leave the body alone and let upstream complain.
+      // No local record AND no live upstream — orphan. Submitting would trip
+      // "invalid url scheme". Surface it so the user can re-insert the asset.
       console.warn(`[VerifyAssets] ${id} missing upstream + no local row to re-create`);
+      orphans.push(oldAssetUrl);
       continue;
     }
     console.log(`[VerifyAssets] ${id} missing upstream, re-creating from ${local.storage_url}`);
@@ -721,6 +735,11 @@ async function verifyAndRehealAssetIds(req, originalBody) {
       // Fall back to raw storage_url so PrivacyInformation auto-retry can pick it up.
       for (const s of idToSlots.get(id)) s.set(local.storage_url);
     }
+  }
+  if (orphans.length) {
+    const err = new Error(`Asset(s) no longer recoverable: ${orphans.join(", ")}. Please re-insert from your library or re-upload.`);
+    err.statusCode = 422;
+    throw err;
   }
   return body;
 }
