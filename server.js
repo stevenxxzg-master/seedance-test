@@ -139,6 +139,15 @@ app.post("/api/generate", async (req, res) => {
       body: JSON.stringify(body),
     });
     const data = await resp.json();
+    // Log the URL slots whenever upstream rejects — makes "invalid url scheme" and
+    // similar BadRequest errors trivially diagnosable from container logs.
+    if (!resp.ok) {
+      const urls = (body.content || []).map((c) => {
+        const slot = c.image_url || c.video_url || c.audio_url;
+        return slot ? `${c.type}=${slot.url}` : c.type;
+      });
+      console.warn(`[Generate] upstream ${resp.status}: ${data.error?.message || "?"} | urls=${JSON.stringify(urls)}`);
+    }
     res.status(resp.status).json(data);
   } catch (err) {
     res

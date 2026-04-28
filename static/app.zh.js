@@ -89,10 +89,13 @@ function syncPrefs() {
     const key = document.getElementById("i-key").value.trim();
     if (!key) return;
     const refMode = document.getElementById("i-ref")?.value || "all";
+    // 仅持久化已上传完毕的素材（cosUrl 存在）。绝不让 blob: 或半成品 URL
+    // 进入 prefs，避免刷新后恢复出来的 mediaItems 被提交时报 invalid url scheme。
+    const isPersistable = (m) => !!(m && m.cosUrl);
     const serializeMedia = (m) => ({
       type: m.type,
-      url: m.url,
-      cosUrl: m.cosUrl || "",
+      url: m.cosUrl,
+      cosUrl: m.cosUrl,
       name: m.name,
       assetUrl: m.assetUrl || "",
       contentHash: m.contentHash || "",
@@ -109,9 +112,9 @@ function syncPrefs() {
       tasks: tasks.filter(t => t.id).slice(0, MAX_TASKS).map(t => ({ id:t.id, status:t.status, progress:t.progress, created:t.created, apiCreatedAt:t.apiCreatedAt, apiUpdatedAt:t.apiUpdatedAt, videoUrl:t.videoUrl, response:t.response, input:t.input })),
       compose: {
         refMode,
-        mediaItems: mediaItems.filter(m => m.url).map(serializeMedia),
-        kfFirst: (kfFirst && kfFirst.url) ? serializeMedia(kfFirst) : null,
-        kfLast: (kfLast && kfLast.url) ? serializeMedia(kfLast) : null,
+        mediaItems: mediaItems.filter(isPersistable).map(serializeMedia),
+        kfFirst: isPersistable(kfFirst) ? serializeMedia(kfFirst) : null,
+        kfLast: isPersistable(kfLast) ? serializeMedia(kfLast) : null,
       },
     };
     fetch("/api/prefs", { method: "PUT", headers: { "X-Api-Key": key, "Content-Type": "application/json" }, body: JSON.stringify(prefs) }).catch(() => {});
@@ -1082,25 +1085,35 @@ function buildRequest() {
   if (prompt) content.push({ type: "text", text: prompt });
 
   const refMode = document.getElementById("i-ref").value;
+  // 上游只接受 asset:// 或 https:// URL，其它（blob:、空串、无 scheme）都会
+  // 报 invalid url scheme。在出口处强校验，杜绝 UI 残留状态污染请求体。
+  const pickUrl = (item) => {
+    const candidates = [item.assetUrl, item.cosUrl, item.url];
+    for (const u of candidates) {
+      if (typeof u === "string" && (u.startsWith("asset://") || u.startsWith("https://"))) return u;
+    }
+    return "";
+  };
 
   if (refMode === "keyframes") {
-    // Keyframe mode: use kfFirst / kfLast
-    if (kfFirst && kfFirst.url) {
-      content.push({ type: "image_url", image_url: { url: kfFirst.assetUrl || kfFirst.url }, role: "first_frame" });
+    if (kfFirst) {
+      const u = pickUrl(kfFirst);
+      if (u) content.push({ type: "image_url", image_url: { url: u }, role: "first_frame" });
     }
-    if (kfLast && kfLast.url) {
-      content.push({ type: "image_url", image_url: { url: kfLast.assetUrl || kfLast.url }, role: "last_frame" });
+    if (kfLast) {
+      const u = pickUrl(kfLast);
+      if (u) content.push({ type: "image_url", image_url: { url: u }, role: "last_frame" });
     }
   } else {
-    // All-reference mode: use mediaItems stack
     for (const item of mediaItems) {
-      if (!item.url) continue;
+      const u = pickUrl(item);
+      if (!u) continue;
       if (item.type === "image") {
-        content.push({ type: "image_url", image_url: { url: item.assetUrl || item.url }, role: "reference_image" });
+        content.push({ type: "image_url", image_url: { url: u }, role: "reference_image" });
       } else if (item.type === "video") {
-        content.push({ type: "video_url", video_url: { url: item.url }, role: "reference_video" });
+        content.push({ type: "video_url", video_url: { url: u }, role: "reference_video" });
       } else if (item.type === "audio") {
-        content.push({ type: "audio_url", audio_url: { url: item.url }, role: "reference_audio" });
+        content.push({ type: "audio_url", audio_url: { url: u }, role: "reference_audio" });
       }
     }
   }

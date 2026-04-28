@@ -91,10 +91,14 @@ function syncPrefs() {
     // Persist enough media metadata to rebuild the compose box on refresh.
     // Same shape as task input snapshots — keep includes assetUrl so resubmit
     // can skip PrivacyInformation when the asset is still whitelisted upstream.
+    // Only items with a real cos/tos URL are eligible — never persist blob: URLs
+    // or in-progress uploads, which would round-trip back as invalid url scheme
+    // when the user resubmits after a refresh.
+    const isPersistable = (m) => !!(m && m.cosUrl);
     const serializeMedia = (m) => ({
       type: m.type,
-      url: m.url,
-      cosUrl: m.cosUrl || "",
+      url: m.cosUrl,
+      cosUrl: m.cosUrl,
       name: m.name,
       assetUrl: m.assetUrl || "",
       contentHash: m.contentHash || "",
@@ -111,9 +115,9 @@ function syncPrefs() {
       tasks: tasks.filter(t => t.id).slice(0, MAX_TASKS).map(t => ({ id:t.id, status:t.status, progress:t.progress, created:t.created, apiCreatedAt:t.apiCreatedAt, apiUpdatedAt:t.apiUpdatedAt, videoUrl:t.videoUrl, response:t.response, input:t.input })),
       compose: {
         refMode,
-        mediaItems: mediaItems.filter(m => m.url).map(serializeMedia),
-        kfFirst: (kfFirst && kfFirst.url) ? serializeMedia(kfFirst) : null,
-        kfLast: (kfLast && kfLast.url) ? serializeMedia(kfLast) : null,
+        mediaItems: mediaItems.filter(isPersistable).map(serializeMedia),
+        kfFirst: isPersistable(kfFirst) ? serializeMedia(kfFirst) : null,
+        kfLast: isPersistable(kfLast) ? serializeMedia(kfLast) : null,
       },
     };
     fetch("/api/prefs", { method: "PUT", headers: { "X-Api-Key": key, "Content-Type": "application/json" }, body: JSON.stringify(prefs) }).catch(() => {});
@@ -1134,25 +1138,38 @@ function buildRequest() {
   if (prompt) content.push({ type: "text", text: prompt });
 
   const refMode = document.getElementById("i-ref").value;
+  // Upstream only accepts asset:// or https:// URLs. Anything else (blob:, "",
+  // null, missing scheme) crashes with "invalid url scheme" — guard at the
+  // boundary so a stale UI state can never produce a poisoned request body.
+  const pickUrl = (item) => {
+    const candidates = [item.assetUrl, item.cosUrl, item.url];
+    for (const u of candidates) {
+      if (typeof u === "string" && (u.startsWith("asset://") || u.startsWith("https://"))) return u;
+    }
+    return "";
+  };
 
   if (refMode === "keyframes") {
     // Keyframe mode: use kfFirst / kfLast
-    if (kfFirst && kfFirst.url) {
-      content.push({ type: "image_url", image_url: { url: kfFirst.assetUrl || kfFirst.url }, role: "first_frame" });
+    if (kfFirst) {
+      const u = pickUrl(kfFirst);
+      if (u) content.push({ type: "image_url", image_url: { url: u }, role: "first_frame" });
     }
-    if (kfLast && kfLast.url) {
-      content.push({ type: "image_url", image_url: { url: kfLast.assetUrl || kfLast.url }, role: "last_frame" });
+    if (kfLast) {
+      const u = pickUrl(kfLast);
+      if (u) content.push({ type: "image_url", image_url: { url: u }, role: "last_frame" });
     }
   } else {
     // All-reference mode: use mediaItems stack
     for (const item of mediaItems) {
-      if (!item.url) continue;
+      const u = pickUrl(item);
+      if (!u) continue;
       if (item.type === "image") {
-        content.push({ type: "image_url", image_url: { url: item.assetUrl || item.url }, role: "reference_image" });
+        content.push({ type: "image_url", image_url: { url: u }, role: "reference_image" });
       } else if (item.type === "video") {
-        content.push({ type: "video_url", video_url: { url: item.assetUrl || item.url }, role: "reference_video" });
+        content.push({ type: "video_url", video_url: { url: u }, role: "reference_video" });
       } else if (item.type === "audio") {
-        content.push({ type: "audio_url", audio_url: { url: item.assetUrl || item.url }, role: "reference_audio" });
+        content.push({ type: "audio_url", audio_url: { url: u }, role: "reference_audio" });
       }
     }
   }
