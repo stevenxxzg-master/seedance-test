@@ -212,6 +212,19 @@
   </div>
 </div>
 
+<!-- Recover-assets Modal -->
+<div id="recover-modal-ov" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)closeRecoverModal()">
+  <div style="background:#fff;border-radius:16px;padding:24px;width:440px;max-width:92vw;box-shadow:0 12px 40px rgba(0,0,0,.18)">
+    <div style="font-size:16px;font-weight:600;margin-bottom:6px">部分素材需要重新上传</div>
+    <div style="font-size:13px;color:#666;margin-bottom:14px" id="recover-modal-desc">以下素材已在云端失效，无法继续使用。是否重新上传后继续生成？</div>
+    <div id="recover-modal-list" style="max-height:220px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:8px;padding:8px;margin-bottom:14px;font-size:13px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="s" onclick="closeRecoverModal()">取消</button>
+      <button id="recover-modal-confirm" onclick="confirmRecoverAssets()">重新上传并继续</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast container -->
 <div id="toast-container"></div>
 </body>

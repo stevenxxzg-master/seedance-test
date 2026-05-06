@@ -216,6 +216,19 @@
   </div>
 </div>
 
+<!-- Recover-assets Modal -->
+<div id="recover-modal-ov" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)closeRecoverModal()">
+  <div style="background:#fff;border-radius:16px;padding:24px;width:440px;max-width:92vw;box-shadow:0 12px 40px rgba(0,0,0,.18)">
+    <div style="font-size:16px;font-weight:600;margin-bottom:6px">Some assets need re-uploading</div>
+    <div style="font-size:13px;color:#666;margin-bottom:14px" id="recover-modal-desc">The following asset(s) have expired upstream and can no longer be used. Re-upload them and continue?</div>
+    <div id="recover-modal-list" style="max-height:220px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:8px;padding:8px;margin-bottom:14px;font-size:13px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="s" onclick="closeRecoverModal()">Cancel</button>
+      <button id="recover-modal-confirm" onclick="confirmRecoverAssets()">Re-upload & Continue</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast container -->
 <div id="toast-container"></div>
 </body>

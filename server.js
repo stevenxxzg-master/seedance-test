@@ -150,7 +150,10 @@ app.post("/api/generate", async (req, res) => {
   } catch (err) {
     const status = err.statusCode
       || (err.message === "API Key is required" ? 401 : 502);
-    res.status(status).json({ error: err.message });
+    const payload = { error: err.message };
+    if (err.code) payload.code = err.code;
+    if (err.assetIds) payload.assetIds = err.assetIds;
+    res.status(status).json(payload);
   }
 });
 
@@ -739,6 +742,8 @@ async function verifyAndRehealAssetIds(req, originalBody) {
   if (orphans.length) {
     const err = new Error(`Asset(s) no longer recoverable: ${orphans.join(", ")}. Please re-insert from your library or re-upload.`);
     err.statusCode = 422;
+    err.code = "ASSETS_UNRECOVERABLE";
+    err.assetIds = orphans;
     throw err;
   }
   return body;
@@ -1037,7 +1042,7 @@ function deriveNameFromUrl(url) {
 app.post("/api/assets/bulk-whitelist", async (req, res) => {
   try {
     const userHash = getUserHash(req);
-    const { storageUrls, items } = req.body;
+    const { storageUrls, items, forceRecreate } = req.body;
     if (!Array.isArray(storageUrls)) return res.status(400).json({ error: "storageUrls array required" });
     const meta = new Map();
     if (Array.isArray(items)) {
@@ -1045,11 +1050,15 @@ app.post("/api/assets/bulk-whitelist", async (req, res) => {
         if (it && typeof it.url === "string") meta.set(it.url, it);
       }
     }
+    // forceRecreate: list of storageUrls whose existing 'ready' status is known
+    // to be stale (caller already saw upstream report them as orphans). Bypass
+    // the reuse short-circuits so we hit Volc CreateAsset and get a fresh id.
+    const force = new Set(Array.isArray(forceRecreate) ? forceRecreate : []);
     const results = {};
     const errors = {};
     for (const url of storageUrls) {
       const existing = findAssetByUrl(userHash, url);
-      if (existing?.asset_status === "ready" && existing.asset_id) {
+      if (existing?.asset_status === "ready" && existing.asset_id && !force.has(url)) {
         results[url] = existing.asset_id;
         continue;
       }
@@ -1059,10 +1068,14 @@ app.post("/api/assets/bulk-whitelist", async (req, res) => {
       const hintType = hint.type || "image";
       const row = existing || insertAsset({ userHash, name, type: hintType, storageUrl: url, thumbUrl: "", contentHash });
       // insertAsset may have returned an older record (hash-matched) that's already whitelisted.
-      // Reuse its asset_id instead of burning another Volc call.
-      if (row.asset_status === "ready" && row.asset_id) {
+      // Reuse its asset_id instead of burning another Volc call (unless caller forced recreate).
+      if (row.asset_status === "ready" && row.asset_id && !force.has(url)) {
         results[url] = row.asset_id;
         continue;
+      }
+      if (force.has(url) && row.id) {
+        // Downgrade local row so the recreate path proceeds cleanly
+        updateAssetStatus(row.id, userHash, { assetId: null, assetStatus: "pending" });
       }
       const assetType = (row.type || hintType) === "video" ? "Video" : (row.type || hintType) === "audio" ? "Audio" : "Image";
       try {

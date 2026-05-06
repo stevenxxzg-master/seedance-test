@@ -112,7 +112,7 @@ function syncPrefs() {
       webSearch: document.getElementById("i-search")?.checked || false,
       watermark: document.getElementById("i-wm")?.checked || false,
       prompt: getPromptText(),
-      tasks: tasks.filter(t => t.id).slice(0, MAX_TASKS).map(t => ({ id:t.id, status:t.status, progress:t.progress, created:t.created, apiCreatedAt:t.apiCreatedAt, apiUpdatedAt:t.apiUpdatedAt, videoUrl:t.videoUrl, response:t.response, input:t.input })),
+      tasks: tasks.filter(t => t.id || t.status === "failed").slice(0, MAX_TASKS).map(t => ({ id:t.id, status:t.status, progress:t.progress, created:t.created, apiCreatedAt:t.apiCreatedAt, apiUpdatedAt:t.apiUpdatedAt, videoUrl:t.videoUrl, response:t.response, input:t.input, error:t.error, endTime:t.endTime })),
       compose: {
         refMode,
         mediaItems: mediaItems.filter(isPersistable).map(serializeMedia),
@@ -1225,9 +1225,9 @@ async function generate() {
       refMode,
       webSearch: document.getElementById("i-search")?.checked || false,
       watermark: document.getElementById("i-wm")?.checked || false,
-      mediaItems: refMode === "all" ? mediaItems.filter(m => m.url).map(m => ({ type: m.type, url: m.url, cosUrl: m.cosUrl || "", name: m.name })) : [],
-      kfFirst: (kfFirst && kfFirst.url) ? { url: kfFirst.url, cosUrl: kfFirst.cosUrl || "", name: kfFirst.name } : null,
-      kfLast: (kfLast && kfLast.url) ? { url: kfLast.url, cosUrl: kfLast.cosUrl || "", name: kfLast.name } : null,
+      mediaItems: refMode === "all" ? mediaItems.filter(m => m.url).map(m => ({ type: m.type, url: m.url, cosUrl: m.cosUrl || "", name: m.name, assetUrl: m.assetUrl || "", contentHash: m.contentHash || "" })) : [],
+      kfFirst: (kfFirst && kfFirst.url) ? { url: kfFirst.url, cosUrl: kfFirst.cosUrl || "", name: kfFirst.name, assetUrl: kfFirst.assetUrl || "", contentHash: kfFirst.contentHash || "" } : null,
+      kfLast: (kfLast && kfLast.url) ? { url: kfLast.url, cosUrl: kfLast.cosUrl || "", name: kfLast.name, assetUrl: kfLast.assetUrl || "", contentHash: kfLast.contentHash || "" } : null,
     };
     // Show placeholder task immediately
     const task = { id: null, status: "submitting", progress: 0, created: Date.now(), response: null, videoUrl: null, pollErrors: 0, input: inputSnapshot };
@@ -1256,6 +1256,16 @@ async function runSubmit(task, body) {
         lastErr = errMsg || JSON.stringify(data);
         const rawJson = JSON.stringify(data);
         console.warn(`[Generate] Attempt ${attempt} failed:`, lastErr);
+        // Upstream asset_id orphaned → ask user to confirm re-upload, then retry
+        if (data.code === "ASSETS_UNRECOVERABLE" && Array.isArray(data.assetIds) && data.assetIds.length && attempt < 3) {
+          const recovered = await recoverUnrecoverableAssets(currentBody, data.assetIds, task);
+          if (recovered) {
+            currentBody = recovered;
+            continue;
+          }
+          lastErr = "Cancelled by user";
+          break;
+        }
         // PrivacyInformation → server-side bulk whitelist, then retry
         if ((lastErr.includes("PrivacyInformation") || rawJson.includes("PrivacyInformation")) && attempt < 3) {
           console.log("[Generate] PrivacyInformation detected, bulk whitelisting...");
@@ -1670,6 +1680,7 @@ function removeTask(key) {
 function clearTasks(){if(!confirm("Clear all task history?"))return;tasks.length=0;saveTasks();renderTasks()}
 function friendlyError(msg) {
   if (!msg) return "生成失败，请重试";
+  if (msg === "Cancelled by user" || msg === "已取消重新加白") return "已取消";
   if (msg.includes("timeout") || msg.includes("Timeout")) return "服务繁忙，请稍后重试";
   if (msg.includes("resolve asset")) return "素材处理中，请稍后重试";
   if (msg.includes("image_url")) return "图片处理异常，请重新上传图片后重试";
@@ -1684,6 +1695,124 @@ function friendlyError(msg) {
 }
 function esc(s){const d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML}
 function escJs(s){return (s==null?"":String(s)).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,'\\"')}
+
+// ── Recover unrecoverable assets (modal + bulk re-whitelist) ──
+let _recoverModalResolve = null;
+
+// Look up storage info for an asset:// URL by walking the task input snapshot
+// (mediaItems / kfFirst / kfLast). Falls back to assetLibrary if needed.
+function lookupAssetByAssetUrl(assetUrl, snap) {
+  const pools = [];
+  if (snap?.mediaItems) pools.push(...snap.mediaItems);
+  if (snap?.kfFirst) pools.push(snap.kfFirst);
+  if (snap?.kfLast) pools.push(snap.kfLast);
+  for (const m of pools) {
+    if (m && m.assetUrl === assetUrl) {
+      const cosUrl = m.cosUrl || m.url;
+      if (cosUrl && (cosUrl.startsWith("https://") || cosUrl.startsWith("http://"))) {
+        return { cosUrl, name: m.name || "", type: m.type || "image", contentHash: m.contentHash || "" };
+      }
+    }
+  }
+  for (const m of (typeof assetLibrary !== "undefined" ? assetLibrary : [])) {
+    if (m.assetUrl === assetUrl || m.asset_id === assetUrl) {
+      const cosUrl = m.cosUrl || m.storage_url || m.url;
+      if (cosUrl && (cosUrl.startsWith("https://") || cosUrl.startsWith("http://"))) {
+        return { cosUrl, name: m.name || "", type: m.type || "image", contentHash: m.contentHash || "" };
+      }
+    }
+  }
+  return null;
+}
+
+// Show the recover-modal and resolve to true (confirm) / false (cancel).
+function openRecoverModal(rows) {
+  return new Promise((resolve) => {
+    _recoverModalResolve = resolve;
+    const list = document.getElementById("recover-modal-list");
+    const confirmBtn = document.getElementById("recover-modal-confirm");
+    const recoverable = rows.filter(r => r.cosUrl);
+    list.innerHTML = rows.map(r => {
+      const ok = !!r.cosUrl;
+      const icon = ok ? "🔄" : "⚠";
+      const label = ok ? esc(r.name || r.assetId) : `${esc(r.name || r.assetId)} (no local copy — please re-upload from Assets)`;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid #f5f5f5"><span>${icon}</span><span style="flex:1;${ok ? "" : "color:#c00"}">${label}</span></div>`;
+    }).join("");
+    confirmBtn.disabled = recoverable.length === 0;
+    confirmBtn.textContent = recoverable.length === rows.length
+      ? "Re-upload & Continue"
+      : `Re-upload ${recoverable.length}/${rows.length} & Continue`;
+    document.getElementById("recover-modal-ov").style.display = "flex";
+  });
+}
+function closeRecoverModal() {
+  document.getElementById("recover-modal-ov").style.display = "none";
+  if (_recoverModalResolve) { _recoverModalResolve(false); _recoverModalResolve = null; }
+}
+function confirmRecoverAssets() {
+  document.getElementById("recover-modal-ov").style.display = "none";
+  if (_recoverModalResolve) { _recoverModalResolve(true); _recoverModalResolve = null; }
+}
+window.closeRecoverModal = closeRecoverModal;
+window.confirmRecoverAssets = confirmRecoverAssets;
+
+// Returns a new body with rewritten asset:// URLs, or null if user cancelled
+// or no asset could be recovered.
+async function recoverUnrecoverableAssets(currentBody, assetIds, task) {
+  const snap = task?.input || {};
+  const rows = assetIds.map(assetId => {
+    const info = lookupAssetByAssetUrl(assetId, snap);
+    return { assetId, cosUrl: info?.cosUrl || "", name: info?.name || "", type: info?.type || "image", contentHash: info?.contentHash || "" };
+  });
+  const ok = await openRecoverModal(rows);
+  if (!ok) return null;
+  const recoverable = rows.filter(r => r.cosUrl);
+  if (recoverable.length === 0) return null;
+  task.status = "whitelisting";
+  task.whitelistStart = Date.now();
+  renderTasks();
+  try {
+    const storageUrls = recoverable.map(r => r.cosUrl);
+    const items = recoverable.map(r => ({ url: r.cosUrl, contentHash: r.contentHash, name: r.name, type: r.type }));
+    const resp = await fetch("/api/assets/bulk-whitelist", {
+      method: "POST", headers: assetHeaders(),
+      body: JSON.stringify({ storageUrls, items, forceRecreate: storageUrls }),
+    });
+    const { results, errors: wlErrors } = await resp.json();
+    const oldToNew = {};
+    for (const r of recoverable) {
+      const newAssetUrl = results?.[r.cosUrl];
+      // Skip if upstream returned the SAME stale asset_id we're trying to replace.
+      if (!newAssetUrl || newAssetUrl === r.assetId) continue;
+      oldToNew[r.assetId] = newAssetUrl;
+      const item = mediaItems.find(m => m.assetUrl === r.assetId);
+      if (item) item.assetUrl = newAssetUrl;
+      if (kfFirst && kfFirst.assetUrl === r.assetId) kfFirst.assetUrl = newAssetUrl;
+      if (kfLast && kfLast.assetUrl === r.assetId) kfLast.assetUrl = newAssetUrl;
+    }
+    const firstErr = Object.values(wlErrors || {})[0];
+    if (firstErr) showToast({ type: "warn", title: "Some assets failed to whitelist", desc: firstErr, duration: 5000 });
+    if (Object.keys(oldToNew).length === 0) return null;
+    const swapUrl = (c, key) => oldToNew[c[key]?.url]
+      ? { ...c, [key]: { ...c[key], url: oldToNew[c[key].url] } }
+      : c;
+    const newBody = {
+      ...currentBody,
+      content: currentBody.content.map(c => {
+        if (c.type === "image_url") return swapUrl(c, "image_url");
+        if (c.type === "video_url") return swapUrl(c, "video_url");
+        if (c.type === "audio_url") return swapUrl(c, "audio_url");
+        return c;
+      }),
+    };
+    loadAssetLibrary();
+    return newBody;
+  } catch (e) {
+    console.warn("[Recover] bulk-whitelist failed:", e.message);
+    showToast({ type: "warn", title: "Re-upload failed", desc: e.message, duration: 5000 });
+    return null;
+  }
+}
 
 // Elapsed-time ticker — only running while tab is visible
 // _elapsedTimer is declared at the top of the file.
