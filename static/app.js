@@ -1256,6 +1256,18 @@ async function runSubmit(task, body) {
         lastErr = errMsg || JSON.stringify(data);
         const rawJson = JSON.stringify(data);
         console.warn(`[Generate] Attempt ${attempt} failed:`, lastErr);
+        // Upstream rejected an asset_id whose URL turned invalid mid-life. We have
+        // the original cosUrl locally — silently re-whitelist (forceRecreate) and
+        // swap the body, no modal. Falls through to ASSETS_UNRECOVERABLE / generic
+        // retry if recovery isn't possible.
+        if (rawJson.includes("invalid url scheme") && attempt < 3) {
+          console.log("[Generate] invalid url scheme detected, silently rehealing...");
+          const recovered = await silentRehealSchemeError(currentBody, task);
+          if (recovered) {
+            currentBody = recovered;
+            continue;
+          }
+        }
         // Upstream asset_id orphaned → ask user to confirm re-upload, then retry
         if (data.code === "ASSETS_UNRECOVERABLE" && Array.isArray(data.assetIds) && data.assetIds.length && attempt < 3) {
           const recovered = await recoverUnrecoverableAssets(currentBody, data.assetIds, task);
@@ -1810,6 +1822,68 @@ async function recoverUnrecoverableAssets(currentBody, assetIds, task) {
   } catch (e) {
     console.warn("[Recover] bulk-whitelist failed:", e.message);
     showToast({ type: "warn", title: "Re-upload failed", desc: e.message, duration: 5000 });
+    return null;
+  }
+}
+
+// Silent recovery for upstream "invalid url scheme" — rebuilds the suspect asset_ids
+// via bulk-whitelist with forceRecreate, swaps them in the body, and returns the new
+// body. No modal: every id we touch already has a live cosUrl on this client, so the
+// user shouldn't have to confirm anything. Returns null if nothing was recoverable.
+async function silentRehealSchemeError(currentBody, task) {
+  const snap = task?.input || {};
+  const suspects = [];
+  for (const c of (currentBody?.content || [])) {
+    const slot = c.image_url || c.video_url || c.audio_url;
+    const url = slot?.url;
+    if (typeof url === "string" && url.startsWith("asset://")) {
+      const info = lookupAssetByAssetUrl(url, snap);
+      if (info?.cosUrl) suspects.push({ assetId: url, ...info });
+    }
+  }
+  if (suspects.length === 0) return null;
+  const seen = new Set();
+  const unique = suspects.filter(s => seen.has(s.assetId) ? false : (seen.add(s.assetId), true));
+  task.status = "whitelisting";
+  task.whitelistStart = Date.now();
+  renderTasks();
+  try {
+    const storageUrls = unique.map(r => r.cosUrl);
+    const items = unique.map(r => ({ url: r.cosUrl, contentHash: r.contentHash, name: r.name, type: r.type }));
+    const resp = await fetch("/api/assets/bulk-whitelist", {
+      method: "POST", headers: assetHeaders(),
+      body: JSON.stringify({ storageUrls, items, forceRecreate: storageUrls }),
+    });
+    const { results, errors: wlErrors } = await resp.json();
+    const oldToNew = {};
+    for (const r of unique) {
+      const newAssetUrl = results?.[r.cosUrl];
+      if (!newAssetUrl || newAssetUrl === r.assetId) continue;
+      oldToNew[r.assetId] = newAssetUrl;
+      const item = mediaItems.find(m => m.assetUrl === r.assetId);
+      if (item) item.assetUrl = newAssetUrl;
+      if (kfFirst && kfFirst.assetUrl === r.assetId) kfFirst.assetUrl = newAssetUrl;
+      if (kfLast && kfLast.assetUrl === r.assetId) kfLast.assetUrl = newAssetUrl;
+    }
+    const firstErr = Object.values(wlErrors || {})[0];
+    if (firstErr) showToast({ type: "warn", title: "Some assets failed to whitelist", desc: firstErr, duration: 5000 });
+    if (Object.keys(oldToNew).length === 0) return null;
+    const swapUrl = (c, key) => oldToNew[c[key]?.url]
+      ? { ...c, [key]: { ...c[key], url: oldToNew[c[key].url] } }
+      : c;
+    const newBody = {
+      ...currentBody,
+      content: currentBody.content.map(c => {
+        if (c.type === "image_url") return swapUrl(c, "image_url");
+        if (c.type === "video_url") return swapUrl(c, "video_url");
+        if (c.type === "audio_url") return swapUrl(c, "audio_url");
+        return c;
+      }),
+    };
+    loadAssetLibrary();
+    return newBody;
+  } catch (e) {
+    console.warn("[SchemeReheal] bulk-whitelist failed:", e.message);
     return null;
   }
 }

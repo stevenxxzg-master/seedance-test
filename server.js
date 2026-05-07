@@ -145,6 +145,23 @@ app.post("/api/generate", async (req, res) => {
         return slot ? `${c.type}=${slot.url}` : c.type;
       });
       console.warn(`[Generate] upstream ${resp.status} | urls=${JSON.stringify(urls)} | err=${JSON.stringify(data).slice(0, 800)}`);
+      // Upstream rejected an asset_id whose internal URL became invalid (e.g. cos://
+      // or empty scheme). Our process-wide cache thinks it's verified, so re-tries
+      // would skip ListAssets and hit the same wall. Drop the suspect ids from the
+      // cache so the next attempt re-verifies (and our reheal path can rebuild them).
+      const errStr = JSON.stringify(data);
+      if (errStr.includes("invalid url scheme")) {
+        let dropped = 0;
+        for (const c of (body.content || [])) {
+          const slot = c.image_url || c.video_url || c.audio_url;
+          const url = slot?.url;
+          if (typeof url === "string" && url.startsWith("asset://")) {
+            const id = url.slice("asset://".length);
+            if (_verifiedAssetIds.delete(id)) dropped++;
+          }
+        }
+        if (dropped) console.warn(`[Generate] invalidated ${dropped} cached asset_id(s) after scheme error`);
+      }
     }
     res.status(resp.status).json(data);
   } catch (err) {
