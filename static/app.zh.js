@@ -58,8 +58,8 @@ const DURATIONS = [4,5,6,7,8,9,10,11,12,13,14,15];
 // Base pricing CNY/s (Volcengine official, per 16:9 reference).
 // Display price = base × duration × REGION_MULT.
 const BASE_PRICE = {
-  "seedance":      { t2v: { "480p": 0.462, "720p": 0.994 },
-                     v2v: { "480p": 0.506, "720p": 1.088 } },
+  "seedance":      { t2v: { "480p": 0.462, "720p": 0.994, "1080p": 2.446 },
+                     v2v: { "480p": 0.506, "720p": 1.088, "1080p": 2.671 } },
   "seedance-fast": { t2v: { "480p": 0.372, "720p": 0.800 },
                      v2v: { "480p": 0.398, "720p": 0.856 } },
 };
@@ -128,6 +128,7 @@ function applyPrefs(p) {
     document.getElementById("model-label").textContent = p.model === "seedance-fast" ? "Seedance Fast" : "Seedance";
     document.getElementById("chk-seedance").style.display = p.model === "seedance" ? "" : "none";
     document.getElementById("chk-seedance-fast").style.display = p.model === "seedance-fast" ? "" : "none";
+    update1080pAvailability(p.model);
   }
   if (p.res) {
     document.getElementById("i-res").value = p.res;
@@ -225,9 +226,15 @@ async function loadPrefs() {
   // Only API key stays in localStorage
   const savedKey = localStorage.getItem("apiKey");
   if (savedKey) document.getElementById("i-key").value = savedKey;
+  let _keyChangeTimer = null;
   document.getElementById("i-key").addEventListener("input", () => {
     localStorage.setItem("apiKey", document.getElementById("i-key").value);
-    loadPrefs(); // reload prefs for new key
+    clearTimeout(_keyChangeTimer);
+    _keyChangeTimer = setTimeout(() => {
+      loadPrefs();
+      _assetLoading = false;
+      loadAssetLibrary();
+    }, 600);
   });
 
   // Apply defaults then load server prefs
@@ -247,6 +254,7 @@ async function loadPrefs() {
   document.getElementById("model-label").textContent = m === "seedance-fast" ? "Seedance Fast" : "Seedance";
   document.getElementById("chk-seedance").style.display = m === "seedance" ? "" : "none";
   document.getElementById("chk-seedance-fast").style.display = m === "seedance-fast" ? "" : "none";
+  update1080pAvailability(m);
   const res = document.getElementById("i-res").value || "720p";
   document.getElementById("res-label").textContent = res;
   const r = document.getElementById("i-ratio").value || "1:1";
@@ -406,8 +414,21 @@ function selectModel(el) {
   document.getElementById("model-label").textContent = v === "seedance-fast" ? "Seedance Fast" : "Seedance";
   document.getElementById("chk-seedance").style.display = v === "seedance" ? "" : "none";
   document.getElementById("chk-seedance-fast").style.display = v === "seedance-fast" ? "" : "none";
+  update1080pAvailability(v);
   closeAllPopups();
   updateCostLabel();
+}
+
+function update1080pAvailability(model) {
+  const el = document.getElementById("res-1080p");
+  if (!el) return;
+  const isFast = model === "seedance-fast";
+  el.style.opacity = isFast ? "0.38" : "";
+  el.style.pointerEvents = isFast ? "none" : "";
+  el.title = isFast ? "Seedance Fast 不支持 1080p" : "";
+  if (isFast && document.getElementById("i-res").value === "1080p") {
+    selectRes(document.querySelector("#res-popup .popup-item[data-value='720p']"));
+  }
 }
 
 function selectRef(el) {
@@ -540,7 +561,7 @@ function getPromptText() {
 
 function mentionThumbHtml(mType, url) {
   if (!url && mType !== "audio") return '';
-  if (mType === "video") return `<video class="mention-inline-thumb" src="${esc(url)}" muted preload="metadata"></video>`;
+  if (mType === "video") return `<img class="mention-inline-thumb" src="${esc(url)}">`;
   if (mType === "audio") return `<span class="mention-inline-thumb" style="display:inline-flex;align-items:center;justify-content:center;background:#f0f2f5;font-size:10px">🎵</span>`;
   return `<img class="mention-inline-thumb" src="${esc(url)}">`;
 }
@@ -600,8 +621,8 @@ function insertMention(text) {
     }
   }
 
-  const typeLabel = text;
-  const mType = text.replace(/\d+$/, "").toLowerCase();
+  const labelZh = text.replace(/\d+$/, "");
+  const mType = labelZh === "图片" ? "image" : labelZh === "视频" ? "video" : "audio";
   const idx = parseInt(text.replace(/\D/g, ""));
   let count = 0;
   const item = mediaItems.find(m => m.type === mType && ++count === idx);
@@ -889,7 +910,7 @@ function renderStack() {
     if (item.thumbUrl && item.type === "image") {
       inner = `<img src="${esc(item.thumbUrl)}">`;
     } else if (item.thumbUrl && item.type === "video") {
-      inner = `<video src="${esc(item.thumbUrl)}" muted></video>`;
+      inner = `<img src="${esc(item.thumbUrl)}">`;
     } else {
       const icons = { image: "🖼", video: "🎬", audio: "🎵" };
       inner = `<div class="stack-icon">${icons[item.type]}</div>`;
@@ -934,30 +955,56 @@ async function handleFileForItem(id, file) {
   item.name = file.name;
   item.file = file;
 
-  // Local preview (revoke old blob URL to prevent memory leak)
   if (item.thumbUrl && item.thumbUrl.startsWith("blob:")) {
     URL.revokeObjectURL(item.thumbUrl);
   }
-  if (item.type === "image" || item.type === "video") {
+  if (item.type === "image") {
     item.thumbUrl = URL.createObjectURL(file);
+  } else if (item.type === "video") {
+    item.thumbUrl = await extractVideoThumbnail(file) || URL.createObjectURL(file);
   }
   renderStack();
 
   try {
-    let fileUrl, hash, reused = false, reusedAsset = null;
+    let fileUrl, hash, reused = false, reusedAsset = null, thumbUrl = item.thumbUrl;
     if (item.type === "video") {
-      // Video path: server-side ffmpeg compression, then fetch compressed blob to hash + upload to assets/
-      const form = new FormData();
-      form.append("file", file);
-      const resp = await fetch("/api/upload/video", { method: "POST", body: form });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || `上传失败（${resp.status}）`);
+      let thumbBlob = null;
+      if (item.thumbUrl && item.thumbUrl.startsWith("blob:")) {
+        try { thumbBlob = await fetch(item.thumbUrl).then(r => r.blob()); } catch { /* non-fatal */ }
       }
-      ({ fileUrl } = await resp.json());
-      // Video is already in uploads/ — try to register with hash if possible (skip hash for now)
+      if (thumbBlob) {
+        const thumbHash = await sha256Hex(thumbBlob);
+        const existing = await lookupAssetByHash(thumbHash);
+        if (existing && existing.storage_url) {
+          showToast({ type: "success", title: "已复用视频", desc: file.name || existing.name || "" });
+          fileUrl = existing.storage_url;
+          hash = thumbHash;
+          reused = true;
+          reusedAsset = existing;
+          thumbUrl = existing.thumb_url || thumbUrl;
+          item.contentHash = thumbHash;
+        }
+      }
+      if (!reused) {
+        const form = new FormData();
+        form.append("file", file);
+        const thumbFile = thumbBlob
+          ? new File([thumbBlob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" })
+          : null;
+        const [videoResp, uploadedThumbUrl] = await Promise.all([
+          fetch("/api/upload/video", { method: "POST", body: form }),
+          thumbFile ? uploadAssetWithHash(thumbFile).then(r => r.fileUrl).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (!videoResp.ok) {
+          const err = await videoResp.json().catch(() => ({}));
+          throw new Error(err.error || `上传失败（${videoResp.status}）`);
+        }
+        ({ fileUrl } = await videoResp.json());
+        if (uploadedThumbUrl) thumbUrl = uploadedThumbUrl;
+        if (thumbBlob) hash = await sha256Hex(thumbBlob);
+        item.contentHash = hash || "";
+      }
     } else {
-      // Image / audio: use hash-based uploader
       const result = await uploadAssetWithHash(file);
       fileUrl = result.fileUrl;
       hash = result.hash;
@@ -967,11 +1014,10 @@ async function handleFileForItem(id, file) {
     item.url = fileUrl;
     item.cosUrl = fileUrl;
     item.contentHash = hash || "";
-    item.assetUrl = reusedAsset?.asset_id || ""; // Reuse existing asset_id if found
-    console.log(`[Upload] ${item.type} uploaded:`, fileUrl, reused ? "(reused)" : "");
+    item.assetUrl = reusedAsset?.asset_id || "";
+    item.persistedThumbUrl = thumbUrl || "";
     renderStack();
     if (reused && reusedAsset) {
-      // Hash hit: promote existing asset in library, skip redundant POST
       const existingIdx = assetLibrary.findIndex(a => a.id === reusedAsset.id);
       if (existingIdx >= 0) assetLibrary.splice(existingIdx, 1);
       assetLibrary.unshift(reusedAsset);
@@ -1216,21 +1262,27 @@ async function runSubmit(task, body) {
           task.status = "whitelisting";
           task.whitelistStart = Date.now();
           renderTasks();
-          const imageUrls = currentBody.content.filter(c => c.type === "image_url").map(c => c.image_url.url).filter(u => !u.startsWith("asset://"));
-          if (imageUrls.length > 0) {
+          const needWhitelist = currentBody.content.filter(c => {
+            const url = c.image_url?.url || c.video_url?.url || c.audio_url?.url;
+            return url && !url.startsWith("asset://");
+          });
+          if (needWhitelist.length > 0) {
             try {
               const lookupItem = (u) => mediaItems.find(m => (m.cosUrl || m.url) === u)
                 || (kfFirst && (kfFirst.cosUrl || kfFirst.url) === u ? kfFirst : null)
                 || (kfLast && (kfLast.cosUrl || kfLast.url) === u ? kfLast : null);
-              const items = imageUrls.map(u => {
+              const storageUrls = needWhitelist.map(c => c.image_url?.url || c.video_url?.url || c.audio_url?.url);
+              const items = needWhitelist.map(c => {
+                const u = c.image_url?.url || c.video_url?.url || c.audio_url?.url;
                 const it = lookupItem(u);
-                return { url: u, contentHash: it?.contentHash || "", name: it?.name || "" };
+                const type = c.type === "video_url" ? "video" : c.type === "audio_url" ? "audio" : "image";
+                return { url: u, contentHash: it?.contentHash || "", name: it?.name || "", type };
               });
               const resp = await fetch("/api/assets/bulk-whitelist", {
                 method: "POST", headers: assetHeaders(),
-                body: JSON.stringify({ storageUrls: imageUrls, items }),
+                body: JSON.stringify({ storageUrls, items }),
               });
-              const { results } = await resp.json();
+              const { results, errors: wlErrors } = await resp.json();
               const urlMap = {};
               for (const [cosUrl, assetUrl] of Object.entries(results || {})) {
                 if (!assetUrl) continue;
@@ -1240,15 +1292,23 @@ async function runSubmit(task, body) {
                 if (kfFirst && (kfFirst.cosUrl || kfFirst.url) === cosUrl) kfFirst.assetUrl = assetUrl;
                 if (kfLast && (kfLast.cosUrl || kfLast.url) === cosUrl) kfLast.assetUrl = assetUrl;
               }
-              // Retry with the ORIGINAL body — only swap cos URLs to asset:// URLs in content.
-              // Never rebuild from current UI: user may have changed duration/ratio/mediaItems meanwhile.
+              const firstErr = Object.values(wlErrors || {})[0];
+              if (firstErr) {
+                const isQuota = firstErr.includes("额度不足") || firstErr.includes("quota") || firstErr.includes("insufficient") || firstErr.includes("balance");
+                showToast({ type: "warn", title: isQuota ? "账户余额不足" : "素材加白失败", desc: isQuota ? "请前往 AnyFast 充值后重试" : firstErr, duration: 5000 });
+              }
+              // 用原 body 重试，仅替换 cos URL → asset:// URL；绝不从当前 UI 重建（用户可能已改 duration/ratio/mediaItems）
+              const swapUrl = (c, key) => urlMap[c[key].url]
+                ? { ...c, [key]: { ...c[key], url: urlMap[c[key].url] } }
+                : c;
               currentBody = {
                 ...currentBody,
-                content: currentBody.content.map(c =>
-                  c.type === "image_url" && urlMap[c.image_url.url]
-                    ? { ...c, image_url: { ...c.image_url, url: urlMap[c.image_url.url] } }
-                    : c
-                ),
+                content: currentBody.content.map(c => {
+                  if (c.type === "image_url") return swapUrl(c, "image_url");
+                  if (c.type === "video_url") return swapUrl(c, "video_url");
+                  if (c.type === "audio_url") return swapUrl(c, "audio_url");
+                  return c;
+                }),
               };
               loadAssetLibrary();
             } catch (e) { console.warn("[Generate] Bulk whitelist failed:", e.message); }
@@ -1883,7 +1943,33 @@ function showToast({ title, desc, type = "info", duration = 3500 }) {
   if (duration > 0) setTimeout(close, duration);
 }
 
-// Compute SHA-256 hex of a File/Blob
+function extractVideoThumbnail(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.muted = true;
+    video.preload = "metadata";
+    video.src = url;
+    const cleanup = () => URL.revokeObjectURL(url);
+    video.onerror = () => { cleanup(); resolve(null); };
+    video.onloadeddata = () => {
+      video.currentTime = 0;
+    };
+    video.onseeked = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext("2d").drawImage(video, 0, 0);
+        canvas.toBlob((blob) => {
+          cleanup();
+          resolve(blob ? URL.createObjectURL(blob) : null);
+        }, "image/jpeg", 0.8);
+      } catch { cleanup(); resolve(null); }
+    };
+  });
+}
+
 async function sha256Hex(file) {
   const buf = await file.arrayBuffer();
   const digest = await crypto.subtle.digest("SHA-256", buf);
@@ -2232,6 +2318,7 @@ async function registerAssetOnUpload(item) {
         name: item.name || "",
         type: item.type || "image",
         storageUrl: item.cosUrl || item.url,
+        thumbUrl: item.persistedThumbUrl || "",
         contentHash: item.contentHash || "",
       }),
     });
