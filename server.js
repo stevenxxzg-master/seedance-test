@@ -1025,7 +1025,7 @@ async function serverEnsureAssetGroup(req) {
 // pending ids by (base, key) and run ONE ListAssets per tick that covers every
 // id the group is waiting on. Same total wall time, ~10× fewer upstream calls.
 //
-// Each group entry: { req, pending: Map<assetId, {resolve,reject,deadline}>, ticker, busy }
+// Each group entry: { req, pending: Map<assetId, {resolve,reject}>, ticker, busy }
 const _pollGroups = new Map();
 const POLL_INTERVAL_MS = 3000;
 
@@ -1085,14 +1085,6 @@ async function runPollTick(key) {
   if (!group || group.busy) return;
   group.busy = true;
   try {
-    // Drop any deadlines that have expired.
-    const now = Date.now();
-    for (const [id, w] of [...group.pending]) {
-      if (now >= w.deadline) {
-        group.pending.delete(id);
-        w.reject(new Error("Asset whitelisting timeout (120s)"));
-      }
-    }
     if (group.pending.size === 0) return;
     const ids = [...group.pending.keys()];
     let items = [];
@@ -1150,7 +1142,7 @@ function awaitAssetActive(req, assetId) {
     group.req = req;
   }
   return new Promise((resolve, reject) => {
-    group.pending.set(assetId, { resolve, reject, deadline: Date.now() + 120000 });
+    group.pending.set(assetId, { resolve, reject });
     if (!group.ticker) {
       group.ticker = setInterval(() => { runPollTick(key); }, POLL_INTERVAL_MS);
       // Kick off an immediate first tick after a small delay so the asset has
