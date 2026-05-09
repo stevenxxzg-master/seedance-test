@@ -198,9 +198,9 @@ app.post("/api/generate", async (req, res) => {
     if (!resp.ok) {
       logGenerateFailure(resp, data, body);
       if (!resp.ok && isInvalidUrlSchemeError(data)) {
-        const rejected = collectVisualAssetIds(body);
+        const rejected = collectMediaAssetIds(body);
         diag("generate.invalid_scheme.retry", { rid, rejected });
-        if (rejected.length) console.warn(`[Generate] re-creating ${rejected.length} visual asset_id(s) after scheme error`);
+        if (rejected.length) console.warn(`[Generate] re-creating ${rejected.length} media asset_id(s) after scheme error`);
         const retryBody = await resolveVisualAssetsForGenerate(req, body, { forceAssetUrls: rejected, rid });
         await new Promise((r) => setTimeout(r, 3000));
         ({ resp, data } = await forwardVideoGeneration(req, retryBody));
@@ -215,7 +215,7 @@ app.post("/api/generate", async (req, res) => {
         if (!resp.ok) {
           logGenerateFailure(resp, data, retryBody, " retry");
           if (isInvalidUrlSchemeError(data)) {
-            const finalRejected = collectVisualAssetIds(retryBody);
+            const finalRejected = collectMediaAssetIds(retryBody);
             diag("generate.invalid_scheme.final_retry", { rid, rejected: finalRejected });
             const finalBody = await resolveVisualAssetsForGenerate(req, retryBody, { forceAssetUrls: finalRejected, rid });
             await new Promise((r) => setTimeout(r, 12000));
@@ -235,7 +235,7 @@ app.post("/api/generate", async (req, res) => {
       }
     }
     if (!resp.ok && isInvalidUrlSchemeError(data)) {
-      throw assetResolutionError(collectVisualAssetIds(body));
+      throw assetResolutionError(collectMediaAssetIds(body));
     }
     diag("generate.finish", { rid, status: resp.status, ok: resp.ok, ms: Date.now() - started });
     res.status(resp.status).json(data);
@@ -259,7 +259,6 @@ app.post("/api/generate", async (req, res) => {
 
 async function forwardVideoGeneration(req, body) {
   const upstreamBody = normalizeAssetUrlSchemeForUpstream(body);
-  rewriteAudioAssetsToHttpForUpstream(req, upstreamBody);
   const resp = await fetch(`${getBase(req)}/v1/video/generations`, {
     method: "POST",
     headers: {
@@ -276,17 +275,6 @@ async function forwardVideoGeneration(req, body) {
     data = { error: text || `Upstream returned HTTP ${resp.status} with an empty response body` };
   }
   return { resp, data };
-}
-
-function rewriteAudioAssetsToHttpForUpstream(req, body) {
-  for (const c of (body?.content || [])) {
-    const slot = c?.audio_url;
-    if (!slot || typeof slot.url !== "string" || !isAssetUrl(slot.url)) continue;
-    const meta = getAssetRecovery(req, slot.url);
-    if (meta?.storageUrl && isHttpUrl(meta.storageUrl)) {
-      slot.url = meta.storageUrl;
-    }
-  }
 }
 
 function normalizeAssetUrlSchemeForUpstream(originalBody) {
@@ -319,11 +307,11 @@ function isPrivacyInformationError(data) {
   return JSON.stringify(data || {}).includes("PrivacyInformation");
 }
 
-function collectVisualAssetIds(body) {
+function collectMediaAssetIds(body) {
   const ids = [];
   for (const c of (body?.content || [])) {
-    if (c.type !== "image_url" && c.type !== "video_url") continue;
-    const slot = c.image_url || c.video_url;
+    if (c.type !== "image_url" && c.type !== "video_url" && c.type !== "audio_url") continue;
+    const slot = c.image_url || c.video_url || c.audio_url;
     const url = slot?.url;
     if (typeof url === "string" && isAssetUrl(url)) ids.push(toCanonicalAssetUrl(url));
   }
@@ -338,14 +326,11 @@ function assetResolutionError(assetIds) {
   return err;
 }
 
-function getVisualSlot(contentItem) {
+function getAssetSlot(contentItem) {
   if (contentItem?.type === "image_url") return { slot: contentItem.image_url, mediaType: "image" };
   if (contentItem?.type === "video_url") return { slot: contentItem.video_url, mediaType: "video" };
+  if (contentItem?.type === "audio_url") return { slot: contentItem.audio_url, mediaType: "audio" };
   return { slot: null, mediaType: "" };
-}
-
-function getAudioSlot(contentItem) {
-  return contentItem?.type === "audio_url" ? contentItem.audio_url : null;
 }
 
 function cleanClientSlot(slot) {
@@ -531,7 +516,7 @@ async function resolveVisualAssetsForGenerate(req, originalBody, { forceAssetUrl
   let audio = 0;
 
   for (const c of (body.content || [])) {
-    const { slot, mediaType } = getVisualSlot(c);
+    const { slot, mediaType } = getAssetSlot(c);
     if (slot) {
       const currentAssetUrl = isAssetUrl(slot.url) ? toCanonicalAssetUrl(slot.url) : "";
       const storageUrl = resolveStorageUrlFromSlot(req, slot);
@@ -557,16 +542,9 @@ async function resolveVisualAssetsForGenerate(req, originalBody, { forceAssetUrl
       }
       slot.url = toCanonicalAssetUrl(assetUrl);
       cleanClientSlot(slot);
-      converted++;
+      if (mediaType === "audio") audio++;
+      else converted++;
       continue;
-    }
-
-    const audioSlot = getAudioSlot(c);
-    if (audioSlot) {
-      const storageUrl = resolveStorageUrlFromSlot(req, audioSlot);
-      if (storageUrl) audioSlot.url = storageUrl;
-      cleanClientSlot(audioSlot);
-      audio++;
     }
   }
 
@@ -577,7 +555,7 @@ async function resolveVisualAssetsForGenerate(req, originalBody, { forceAssetUrl
     forced: force.size,
     cacheEntries: cache.size,
   });
-  if (converted) console.warn(`[Generate] resolved ${converted} visual URL(s) to asset://`);
+  if (converted || audio) console.warn(`[Generate] resolved ${converted} visual and ${audio} audio URL(s) to asset://`);
   return body;
 }
 

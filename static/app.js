@@ -1252,10 +1252,8 @@ async function generate() {
       showKeyModal(); return;
     }
     const refMode = document.getElementById("i-ref").value;
-    // Promote already-whitelisted cos URLs to asset:// AND proactively whitelist
-    // anything still on a cosUrl, because seedance rejects raw-cosUrl image/video
-    // with the privacy guard. After this returns, image/video items either have
-    // an asset:// or were unable to whitelist.
+    // Promote already-whitelisted storage URLs to asset:// and proactively
+    // whitelist any remaining media before generation.
     await reconcileAssetUrls();
 
     // Surface visual items that failed to acquire an asset_id — buildRequest will
@@ -2131,16 +2129,14 @@ async function reconcileAssetUrls() {
     if (found) { kfLast.assetUrl = found; kfLast.assetStatus = "ready"; }
   }
 
-  // Pass 2: proactively whitelist anything still on a cosUrl. We exclude audio
-  // because seedance accepts raw audio cosUrls without tripping the guard,
-  // and the upstream Volc Asset API audio path is flakier.
+  // Pass 2: proactively whitelist anything still on a cosUrl, including audio.
+  // Audio must go through volc-asset-audio before mixed media generation.
   const refMode = document.getElementById("i-ref")?.value || "all";
   const targets = [];
   const collect = (item) => {
     if (!item) return;
     if (item.assetUrl) return;
     if (item.assetStatus === "pending") return;
-    if (item.type === "audio") return;
     const url = item.cosUrl || item.url;
     if (!url || !url.startsWith("https://")) return;
     targets.push({ item, url });
