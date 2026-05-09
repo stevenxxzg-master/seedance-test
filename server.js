@@ -127,26 +127,108 @@ function getBase(req) {
   return base;
 }
 
-app.post("/api/generate", async (req, res) => {
+function requestId(req, prefix = "req") {
+  if (!req._rid) req._rid = `${prefix}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 6)}`;
+  return req._rid;
+}
+
+function shortHash(value, len = 8) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, len);
+}
+
+function safeUserTag(req) {
   try {
-    let body = await resolveVisualAssetsForGenerate(req, req.body);
+    return hashApiKey(getKey(req)).slice(0, 8);
+  } catch {
+    return "anon";
+  }
+}
+
+function safeBaseHost(req) {
+  try {
+    return new URL(getBase(req)).hostname;
+  } catch {
+    return "invalid-base";
+  }
+}
+
+function safeUrlTag(url) {
+  if (!url || typeof url !== "string") return "";
+  if (isAssetUrl(url)) return toCanonicalAssetUrl(url);
+  try {
+    const u = new URL(url);
+    const file = u.pathname.split("/").filter(Boolean).pop() || "";
+    return `${u.hostname}/${file.slice(0, 18)}#${shortHash(url, 8)}`;
+  } catch {
+    return `bad-url#${shortHash(url, 8)}`;
+  }
+}
+
+function diag(event, fields = {}) {
+  try {
+    console.log(`[Diag] ${event} ${JSON.stringify(fields)}`);
+  } catch {
+    console.log(`[Diag] ${event}`);
+  }
+}
+
+app.post("/api/generate", async (req, res) => {
+  const rid = requestId(req, "gen");
+  const started = Date.now();
+  try {
+    diag("generate.start", {
+      rid,
+      user: safeUserTag(req),
+      base: safeBaseHost(req),
+      storage: isTosOrigin(req) ? "tos" : "cos",
+      content: Array.isArray(req.body?.content) ? req.body.content.length : 0,
+      visual: (req.body?.content || []).filter((c) => c?.type === "image_url" || c?.type === "video_url").length,
+      audio: (req.body?.content || []).filter((c) => c?.type === "audio_url").length,
+    });
+    let body = await resolveVisualAssetsForGenerate(req, req.body, { rid });
     let { resp, data } = await forwardVideoGeneration(req, body);
+    diag("generate.upstream", {
+      rid,
+      status: resp.status,
+      ok: resp.ok,
+      ms: Date.now() - started,
+      id: data?.id || data?.task_id || data?.data?.id || "",
+      err: resp.ok ? "" : JSON.stringify(data || {}).slice(0, 300),
+    });
     if (!resp.ok) {
       logGenerateFailure(resp, data, body);
       if (!resp.ok && isInvalidUrlSchemeError(data)) {
         const rejected = collectVisualAssetIds(body);
+        diag("generate.invalid_scheme.retry", { rid, rejected });
         if (rejected.length) console.warn(`[Generate] re-creating ${rejected.length} visual asset_id(s) after scheme error`);
-        const retryBody = await resolveVisualAssetsForGenerate(req, body, { forceAssetUrls: rejected });
+        const retryBody = await resolveVisualAssetsForGenerate(req, body, { forceAssetUrls: rejected, rid });
         await new Promise((r) => setTimeout(r, 3000));
         ({ resp, data } = await forwardVideoGeneration(req, retryBody));
+        diag("generate.upstream.retry", {
+          rid,
+          status: resp.status,
+          ok: resp.ok,
+          ms: Date.now() - started,
+          id: data?.id || data?.task_id || data?.data?.id || "",
+          err: resp.ok ? "" : JSON.stringify(data || {}).slice(0, 300),
+        });
         if (!resp.ok) {
           logGenerateFailure(resp, data, retryBody, " retry");
           if (isInvalidUrlSchemeError(data)) {
             const finalRejected = collectVisualAssetIds(retryBody);
-            const finalBody = await resolveVisualAssetsForGenerate(req, retryBody, { forceAssetUrls: finalRejected });
+            diag("generate.invalid_scheme.final_retry", { rid, rejected: finalRejected });
+            const finalBody = await resolveVisualAssetsForGenerate(req, retryBody, { forceAssetUrls: finalRejected, rid });
             await new Promise((r) => setTimeout(r, 12000));
             ({ resp, data } = await forwardVideoGeneration(req, finalBody));
             body = finalBody;
+            diag("generate.upstream.final_retry", {
+              rid,
+              status: resp.status,
+              ok: resp.ok,
+              ms: Date.now() - started,
+              id: data?.id || data?.task_id || data?.data?.id || "",
+              err: resp.ok ? "" : JSON.stringify(data || {}).slice(0, 300),
+            });
             if (!resp.ok) logGenerateFailure(resp, data, finalBody, " retry-after-wait");
           }
         }
@@ -155,10 +237,19 @@ app.post("/api/generate", async (req, res) => {
     if (!resp.ok && isInvalidUrlSchemeError(data)) {
       throw assetResolutionError(collectVisualAssetIds(body));
     }
+    diag("generate.finish", { rid, status: resp.status, ok: resp.ok, ms: Date.now() - started });
     res.status(resp.status).json(data);
   } catch (err) {
     const status = err.statusCode
       || (err.message === "API Key is required" ? 401 : 502);
+    diag("generate.error", {
+      rid,
+      status,
+      code: err.code || "",
+      message: err.message,
+      assetIds: err.assetIds || [],
+      ms: Date.now() - started,
+    });
     const payload = { error: err.message };
     if (err.code) payload.code = err.code;
     if (err.assetIds) payload.assetIds = err.assetIds;
@@ -283,10 +374,17 @@ function resolveStorageUrlFromSlot(req, slot) {
   return "";
 }
 
-async function resolveVisualAssetFromStorage(req, slot, mediaType, { force = false } = {}) {
+async function resolveVisualAssetFromStorage(req, slot, mediaType, { force = false, rid = requestId(req, "gen") } = {}) {
+  const stepStarted = Date.now();
   const userHash = getUserHash(req);
   const originalStorageUrl = resolveStorageUrlFromSlot(req, slot);
   if (!isHttpUrl(originalStorageUrl)) {
+    diag("asset.resolve.missing_storage", {
+      rid,
+      mediaType,
+      current: safeUrlTag(slot?.url),
+      hinted: safeUrlTag(slot?._cosUrl),
+    });
     const err = new Error("素材缺少可恢复的 URL，请重新上传后重试");
     err.statusCode = 422;
     err.code = "ASSET_STORAGE_MISSING";
@@ -298,12 +396,20 @@ async function resolveVisualAssetFromStorage(req, slot, mediaType, { force = fal
   const storageUrl = await mirrorCosAssetToTosIfNeeded(req, originalStorageUrl, originalHash);
   const contentHash = originalHash || deriveContentHashFromStorageUrl(storageUrl);
   const name = (typeof slot?._name === "string" && slot._name) ? slot._name : deriveNameFromUrl(storageUrl);
+  const mirrored = storageUrl !== originalStorageUrl;
 
   let asset = (contentHash ? findAssetByHash(userHash, contentHash) : null)
     || findAssetByUrl(userHash, storageUrl)
     || (storageUrl !== originalStorageUrl ? findAssetByUrl(userHash, originalStorageUrl) : null);
 
   if (asset && asset.storage_url !== storageUrl) {
+    diag("asset.resolve.storage_switch", {
+      rid,
+      row: asset.id,
+      from: safeUrlTag(asset.storage_url),
+      to: safeUrlTag(storageUrl),
+      hash: (asset.content_hash || contentHash || "").slice(0, 12),
+    });
     asset = upsertKnownAsset({
       userHash,
       name: asset.name || name,
@@ -318,7 +424,16 @@ async function resolveVisualAssetFromStorage(req, slot, mediaType, { force = fal
 
   if (!asset) {
     asset = insertAsset({ userHash, name, type: mediaType, storageUrl, thumbUrl: "", contentHash });
+    diag("asset.resolve.db_insert", {
+      rid,
+      row: asset?.id,
+      mediaType,
+      storage: safeUrlTag(storageUrl),
+      hash: (contentHash || "").slice(0, 12),
+      mirrored,
+    });
   } else {
+    const before = asset;
     asset = upsertKnownAsset({
       userHash,
       name: asset.name || name,
@@ -326,6 +441,17 @@ async function resolveVisualAssetFromStorage(req, slot, mediaType, { force = fal
       storageUrl,
       contentHash: asset.content_hash || contentHash,
     }) || asset;
+    diag("asset.resolve.db_hit", {
+      rid,
+      row: asset.id,
+      mediaType,
+      status: before.asset_status || "",
+      hasAssetId: Boolean(before.asset_id),
+      storage: safeUrlTag(storageUrl),
+      hash: (asset.content_hash || contentHash || "").slice(0, 12),
+      force,
+      mirrored,
+    });
   }
 
   if (!force && asset.asset_status === "ready" && asset.asset_id) {
@@ -335,15 +461,39 @@ async function resolveVisualAssetFromStorage(req, slot, mediaType, { force = fal
       type: asset.type || mediaType,
       contentHash: asset.content_hash || contentHash,
     });
+    diag("asset.resolve.reuse_ready", {
+      rid,
+      row: asset.id,
+      asset: asset.asset_id,
+      mediaType,
+      ms: Date.now() - stepStarted,
+    });
     return asset.asset_id;
   }
 
+  diag("asset.resolve.whitelist_start", {
+    rid,
+    row: asset.id,
+    mediaType,
+    force,
+    status: asset.asset_status || "",
+    hadAssetId: Boolean(asset.asset_id),
+    storage: safeUrlTag(asset.storage_url || storageUrl),
+  });
   const result = await whitelistLocalAsset(req, userHash, asset, {
     force,
     name: asset.name || name,
     type: asset.type || mediaType,
   });
   if (result.error) {
+    diag("asset.resolve.whitelist_error", {
+      rid,
+      row: asset.id,
+      mediaType,
+      force,
+      error: result.error,
+      ms: Date.now() - stepStarted,
+    });
     const err = new Error(result.error);
     err.statusCode = 422;
     err.code = "ASSET_WHITELIST_FAILED";
@@ -362,14 +512,23 @@ async function resolveVisualAssetFromStorage(req, slot, mediaType, { force = fal
     type: result.asset.type || mediaType,
     contentHash: result.asset.content_hash || contentHash,
   });
+  diag("asset.resolve.whitelist_done", {
+    rid,
+    row: result.asset.id,
+    asset: result.asset.asset_id,
+    mediaType,
+    force,
+    ms: Date.now() - stepStarted,
+  });
   return result.asset.asset_id;
 }
 
-async function resolveVisualAssetsForGenerate(req, originalBody, { forceAssetUrls = [] } = {}) {
+async function resolveVisualAssetsForGenerate(req, originalBody, { forceAssetUrls = [], rid = requestId(req, "gen") } = {}) {
   const body = JSON.parse(JSON.stringify(originalBody || {}));
   const force = normalizeForceAssetSet(forceAssetUrls);
   const cache = new Map();
   let converted = 0;
+  let audio = 0;
 
   for (const c of (body.content || [])) {
     const { slot, mediaType } = getVisualSlot(c);
@@ -379,10 +538,22 @@ async function resolveVisualAssetsForGenerate(req, originalBody, { forceAssetUrl
       const cacheKey = `${mediaType}:${normalizeContentHash(slot._contentHash)}:${storageUrl || currentAssetUrl}`;
       let assetUrl = cache.get(cacheKey);
       if (!assetUrl) {
-        assetUrl = await resolveVisualAssetFromStorage(req, slot, mediaType, {
+        diag("asset.resolve.slot", {
+          rid,
+          mediaType,
+          role: c.role || "",
+          source: storageUrl ? "storage" : (currentAssetUrl ? "asset" : "missing"),
+          storage: safeUrlTag(storageUrl),
+          currentAsset: currentAssetUrl,
           force: currentAssetUrl ? force.has(currentAssetUrl) : false,
         });
+        assetUrl = await resolveVisualAssetFromStorage(req, slot, mediaType, {
+          force: currentAssetUrl ? force.has(currentAssetUrl) : false,
+          rid,
+        });
         cache.set(cacheKey, assetUrl);
+      } else {
+        diag("asset.resolve.cache_hit", { rid, mediaType, role: c.role || "", asset: assetUrl });
       }
       slot.url = toCanonicalAssetUrl(assetUrl);
       cleanClientSlot(slot);
@@ -395,9 +566,17 @@ async function resolveVisualAssetsForGenerate(req, originalBody, { forceAssetUrl
       const storageUrl = resolveStorageUrlFromSlot(req, audioSlot);
       if (storageUrl) audioSlot.url = storageUrl;
       cleanClientSlot(audioSlot);
+      audio++;
     }
   }
 
+  diag("asset.resolve.summary", {
+    rid,
+    visual: converted,
+    audio,
+    forced: force.size,
+    cacheEntries: cache.size,
+  });
   if (converted) console.warn(`[Generate] resolved ${converted} visual URL(s) to asset://`);
   return body;
 }
@@ -1153,20 +1332,33 @@ function awaitAssetActive(req, assetId) {
 }
 
 async function serverCreateAsset(req, url, name, assetType = "Image") {
+  const rid = requestId(req, "req");
+  const started = Date.now();
   // Reject upstream-bound bad URLs at the source. Volc CreateAsset will happily
   // accept anything but later /generate calls fail with "invalid url scheme",
   // by which point the bad asset_id is loose in the system. Catch it here.
   if (typeof url !== "string" || !(url.startsWith("https://") || url.startsWith("http://"))) {
+    diag("asset.create.reject_url", { rid, assetType, url: safeUrlTag(url) });
     throw new Error(`serverCreateAsset rejected invalid URL: ${JSON.stringify(url)?.slice(0, 100)}`);
   }
   const groupId = await serverEnsureAssetGroup(req);
+  diag("asset.create.start", {
+    rid,
+    group: groupId,
+    assetType,
+    name: (name || "").slice(0, 40),
+    storage: safeUrlTag(url),
+  });
   const result = await volcAssetCall(req, "CreateAsset", {
     GroupId: groupId, URL: url, AssetType: assetType, Name: (name || assetType.toLowerCase()).slice(0, 60),
   });
+  diag("asset.create.created", { rid, group: groupId, asset: result.Id, assetType, ms: Date.now() - started });
   const cacheKey = getBase(req) + "|" + getKey(req);
   const entry = _groupCache.get(cacheKey);
   if (entry) entry.count++;
-  return await awaitAssetActive(req, result.Id);
+  const activeId = await awaitAssetActive(req, result.Id);
+  diag("asset.create.active", { rid, asset: activeId, assetType, ms: Date.now() - started });
+  return activeId;
 }
 
 const _assetRecoveryByAssetUrl = new Map();
@@ -1214,27 +1406,61 @@ function decorateWithThumbToken(assets, userHash) {
 const _localWhitelistLocks = new Map();
 
 async function whitelistLocalAsset(req, userHash, asset, { force = false, name, type } = {}) {
+  const rid = requestId(req, "req");
+  const started = Date.now();
   const lockKey = `${userHash}:${asset.id}`;
   if (!force) {
     const current = getAssetById(asset.id) || asset;
     if (current.asset_status === "ready" && current.asset_id && !shouldMirrorCosToTos(req, current.storage_url)) {
+      diag("asset.whitelist.reuse_ready", {
+        rid,
+        row: current.id,
+        asset: current.asset_id,
+        type: current.type || "",
+        storage: safeUrlTag(current.storage_url),
+      });
       return { asset: current };
     }
     const existingLock = _localWhitelistLocks.get(lockKey);
-    if (existingLock) return await existingLock;
+    if (existingLock) {
+      diag("asset.whitelist.join_lock", { rid, row: asset.id });
+      return await existingLock;
+    }
   }
 
   const pending = (async () => {
     let current = getAssetById(asset.id) || asset;
     if (!force && current.asset_status === "ready" && current.asset_id && !shouldMirrorCosToTos(req, current.storage_url)) {
+      diag("asset.whitelist.reuse_ready_late", {
+        rid,
+        row: current.id,
+        asset: current.asset_id,
+        type: current.type || "",
+        storage: safeUrlTag(current.storage_url),
+      });
       return { asset: current };
     }
+    diag("asset.whitelist.start", {
+      rid,
+      row: current.id,
+      type: type || current.type || "image",
+      force,
+      status: current.asset_status || "",
+      hadAssetId: Boolean(current.asset_id),
+      storage: safeUrlTag(current.storage_url),
+    });
     updateAssetStatus(current.id, userHash, { assetId: null, assetStatus: "pending" });
     try {
       const mediaType = type || current.type || "image";
       const assetType = mediaType === "video" ? "Video" : mediaType === "audio" ? "Audio" : "Image";
       const mirroredUrl = await mirrorCosAssetToTosIfNeeded(req, current.storage_url, current.content_hash);
       if (mirroredUrl !== current.storage_url) {
+        diag("asset.whitelist.mirrored", {
+          rid,
+          row: current.id,
+          from: safeUrlTag(current.storage_url),
+          to: safeUrlTag(mirroredUrl),
+        });
         current = upsertKnownAsset({
           userHash,
           name: name || current.name,
@@ -1251,9 +1477,25 @@ async function whitelistLocalAsset(req, userHash, asset, { force = false, name, 
         assetId: "asset://" + volcId,
         assetStatus: "ready",
       });
+      diag("asset.whitelist.done", {
+        rid,
+        row: updated?.id || current.id,
+        asset: updated?.asset_id || ("asset://" + volcId),
+        type: mediaType,
+        force,
+        ms: Date.now() - started,
+      });
       return { asset: updated };
     } catch (e) {
       const failed = updateAssetStatus(current.id, userHash, { assetId: null, assetStatus: "failed" });
+      diag("asset.whitelist.failed", {
+        rid,
+        row: current.id,
+        type: type || current.type || "image",
+        force,
+        error: e.message,
+        ms: Date.now() - started,
+      });
       return { asset: failed, error: e.message };
     }
   })().finally(() => {
@@ -1452,11 +1694,20 @@ app.get("/api/assets/sync", async (req, res) => {
 // when the call succeeds; if it fails we return the row as 'none' and the
 // user can retry from the asset library button.
 app.post("/api/assets", async (req, res) => {
+  const rid = requestId(req, "asset");
+  const started = Date.now();
   try {
     const userHash = getUserHash(req);
     const { name, type, thumbUrl, contentHash } = req.body;
     let { storageUrl } = req.body;
     if (!storageUrl) return res.status(400).json({ error: "storageUrl required" });
+    diag("asset.register.start", {
+      rid,
+      user: userHash.slice(0, 8),
+      type: type || "image",
+      storage: safeUrlTag(storageUrl),
+      hash: (contentHash || "").slice(0, 12),
+    });
     storageUrl = await mirrorCosAssetToTosIfNeeded(req, storageUrl, contentHash);
     const asset = upsertKnownAsset({
       userHash,
@@ -1471,16 +1722,42 @@ app.post("/api/assets", async (req, res) => {
     // unless a zh request is carrying a legacy COS-backed row that needs a
     // TOS asset id instead.
     if (asset.asset_status === "ready" && asset.asset_id && !shouldMirrorCosToTos(req, asset.storage_url)) {
+      diag("asset.register.reuse_ready", {
+        rid,
+        row: asset.id,
+        asset: asset.asset_id,
+        status: asset.asset_status,
+        ms: Date.now() - started,
+      });
       return res.json({ asset });
     }
     const result = await whitelistLocalAsset(req, userHash, asset, { name, type });
     if (result.error) {
       console.warn(`[Whitelist] Asset ${asset.id} auto-whitelist failed:`, result.error);
+      diag("asset.register.whitelist_error", {
+        rid,
+        row: asset.id,
+        error: result.error,
+        ms: Date.now() - started,
+      });
       return res.json({ asset: result.asset, whitelistError: result.error });
     }
     console.log(`[Whitelist] Asset ${asset.id} ready (auto): ${result.asset.asset_id}`);
+    diag("asset.register.done", {
+      rid,
+      row: result.asset.id,
+      asset: result.asset.asset_id,
+      status: result.asset.asset_status,
+      ms: Date.now() - started,
+    });
     return res.json({ asset: result.asset });
   } catch (err) {
+    diag("asset.register.error", {
+      rid,
+      status: err.message === "API Key is required" ? 401 : 500,
+      message: err.message,
+      ms: Date.now() - started,
+    });
     res.status(err.message === "API Key is required" ? 401 : 500).json({ error: err.message });
   }
 });
@@ -1557,10 +1834,18 @@ function deriveNameFromUrl(url) {
 
 // Bulk whitelist — for PrivacyInformation auto-retry
 app.post("/api/assets/bulk-whitelist", async (req, res) => {
+  const rid = requestId(req, "bulk");
+  const started = Date.now();
   try {
     const userHash = getUserHash(req);
     const { storageUrls, items, forceRecreate } = req.body;
     if (!Array.isArray(storageUrls)) return res.status(400).json({ error: "storageUrls array required" });
+    diag("asset.bulk.start", {
+      rid,
+      user: userHash.slice(0, 8),
+      count: storageUrls.length,
+      force: Array.isArray(forceRecreate) ? forceRecreate.length : 0,
+    });
     const meta = new Map();
     if (Array.isArray(items)) {
       for (const it of items) {
@@ -1623,8 +1908,21 @@ app.post("/api/assets/bulk-whitelist", async (req, res) => {
         results[originalUrl] = updated.asset_id;
       }
     }
+    diag("asset.bulk.done", {
+      rid,
+      count: storageUrls.length,
+      ok: Object.values(results).filter(Boolean).length,
+      errors: Object.keys(errors).length,
+      ms: Date.now() - started,
+    });
     res.json({ results, errors });
   } catch (err) {
+    diag("asset.bulk.error", {
+      rid,
+      status: err.message === "API Key is required" ? 401 : 500,
+      message: err.message,
+      ms: Date.now() - started,
+    });
     res.status(err.message === "API Key is required" ? 401 : 500).json({ error: err.message });
   }
 });
