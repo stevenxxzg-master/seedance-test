@@ -7,7 +7,7 @@ import COS from "cos-nodejs-sdk-v5";
 import crypto from "crypto";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { createReadStream, createWriteStream, readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync } from "fs";
+import { createReadStream, createWriteStream, readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, statSync, existsSync } from "fs";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import { createRequire } from "module";
@@ -33,7 +33,7 @@ app.use((req, res, next) => {
   if (origin && (origin.includes("anyfast.com.cn") || origin.includes("anyfast.ai"))) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-Api-Key,X-Api-Base,X-Storage,Authorization");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-Api-Key,X-Api-Base,X-Storage,Authorization,X-Debug-Token");
     if (req.method === "OPTIONS") return res.sendStatus(204);
   }
   next();
@@ -87,6 +87,9 @@ app.get("/", sendHtml("index.html"));
 app.get("/zh", sendHtml("index-zh.html"));
 
 const API_BASE = process.env.API_BASE_URL || "https://www.example.com";
+const DEBUG_LOG_DIR = process.env.DEBUG_LOG_DIR || join(__dirname, "data", "debug");
+const FULL_UPSTREAM_ERROR_LOG_FLAG = join(DEBUG_LOG_DIR, "upstream-error-logging.enabled");
+const FULL_UPSTREAM_ERROR_LOG_FILE = join(DEBUG_LOG_DIR, "upstream-errors.jsonl");
 
 function getKey(req) {
   const key = req.headers["x-api-key"];
@@ -172,6 +175,120 @@ function diag(event, fields = {}) {
   }
 }
 
+function isFullUpstreamErrorLoggingEnabled() {
+  return process.env.FULL_UPSTREAM_ERROR_LOG === "1" || existsSync(FULL_UPSTREAM_ERROR_LOG_FLAG);
+}
+
+function setFullUpstreamErrorLogging(enabled) {
+  mkdirSync(DEBUG_LOG_DIR, { recursive: true });
+  if (enabled) {
+    writeFileSync(FULL_UPSTREAM_ERROR_LOG_FLAG, new Date().toISOString() + "\n");
+  } else if (existsSync(FULL_UPSTREAM_ERROR_LOG_FLAG)) {
+    unlinkSync(FULL_UPSTREAM_ERROR_LOG_FLAG);
+  }
+}
+
+function requireDebugAccess(req) {
+  getKey(req);
+  const token = process.env.DEBUG_LOG_TOKEN || "";
+  if (token && req.headers["x-debug-token"] !== token) {
+    const err = new Error("Invalid debug token");
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+function recordFullUpstreamError({ rid, attempt, req, upstreamUrl, upstreamBody, resp, responseText, data, ms }) {
+  if (!isFullUpstreamErrorLoggingEnabled()) return;
+  try {
+    mkdirSync(DEBUG_LOG_DIR, { recursive: true });
+    const row = {
+      ts: new Date().toISOString(),
+      rid,
+      attempt,
+      user: safeUserTag(req),
+      base: safeBaseHost(req),
+      storage: isTosOrigin(req) ? "tos" : "cos",
+      ms,
+      request: {
+        method: "POST",
+        url: upstreamUrl,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer [redacted]",
+        },
+        body: upstreamBody,
+      },
+      response: {
+        status: resp.status,
+        ok: resp.ok,
+        headers: Object.fromEntries(resp.headers.entries()),
+        bodyText: responseText,
+        bodyJson: data,
+      },
+    };
+    appendFileSync(FULL_UPSTREAM_ERROR_LOG_FILE, JSON.stringify(row) + "\n");
+    diag("debug.upstream_error_recorded", { rid, attempt, file: FULL_UPSTREAM_ERROR_LOG_FILE });
+  } catch (e) {
+    console.warn("[DebugLog] failed to record upstream error:", e.message);
+  }
+}
+
+app.get("/api/debug/upstream-error-logging", (req, res) => {
+  try {
+    requireDebugAccess(req);
+    res.json({
+      enabled: isFullUpstreamErrorLoggingEnabled(),
+      envEnabled: process.env.FULL_UPSTREAM_ERROR_LOG === "1",
+      flagFile: FULL_UPSTREAM_ERROR_LOG_FLAG,
+      logFile: FULL_UPSTREAM_ERROR_LOG_FILE,
+    });
+  } catch (err) {
+    res.status(err.statusCode || (err.message === "API Key is required" ? 401 : 500)).json({ error: err.message });
+  }
+});
+
+app.post("/api/debug/upstream-error-logging", (req, res) => {
+  try {
+    requireDebugAccess(req);
+    const enabled = Boolean(req.body?.enabled);
+    setFullUpstreamErrorLogging(enabled);
+    res.json({
+      enabled: isFullUpstreamErrorLoggingEnabled(),
+      flagFile: FULL_UPSTREAM_ERROR_LOG_FLAG,
+      logFile: FULL_UPSTREAM_ERROR_LOG_FILE,
+    });
+  } catch (err) {
+    res.status(err.statusCode || (err.message === "API Key is required" ? 401 : 500)).json({ error: err.message });
+  }
+});
+
+app.get("/api/debug/upstream-error-logs", (req, res) => {
+  try {
+    requireDebugAccess(req);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit || "20", 10) || 20, 100));
+    if (!existsSync(FULL_UPSTREAM_ERROR_LOG_FILE)) return res.json({ file: FULL_UPSTREAM_ERROR_LOG_FILE, entries: [] });
+    const lines = readFileSync(FULL_UPSTREAM_ERROR_LOG_FILE, "utf8").trim().split("\n").filter(Boolean);
+    const entries = lines.slice(-limit).map((line) => {
+      try { return JSON.parse(line); } catch { return { parseError: true, line }; }
+    });
+    res.json({ file: FULL_UPSTREAM_ERROR_LOG_FILE, total: lines.length, entries });
+  } catch (err) {
+    res.status(err.statusCode || (err.message === "API Key is required" ? 401 : 500)).json({ error: err.message });
+  }
+});
+
+app.delete("/api/debug/upstream-error-logs", (req, res) => {
+  try {
+    requireDebugAccess(req);
+    mkdirSync(DEBUG_LOG_DIR, { recursive: true });
+    writeFileSync(FULL_UPSTREAM_ERROR_LOG_FILE, "");
+    res.json({ ok: true, file: FULL_UPSTREAM_ERROR_LOG_FILE });
+  } catch (err) {
+    res.status(err.statusCode || (err.message === "API Key is required" ? 401 : 500)).json({ error: err.message });
+  }
+});
+
 app.post("/api/generate", async (req, res) => {
   const rid = requestId(req, "gen");
   const started = Date.now();
@@ -186,7 +303,7 @@ app.post("/api/generate", async (req, res) => {
       audio: (req.body?.content || []).filter((c) => c?.type === "audio_url").length,
     });
     let body = await resolveVisualAssetsForGenerate(req, req.body, { rid });
-    let { resp, data } = await forwardVideoGeneration(req, body);
+    let { resp, data } = await forwardVideoGeneration(req, body, { rid, attempt: "initial" });
     diag("generate.upstream", {
       rid,
       status: resp.status,
@@ -203,7 +320,7 @@ app.post("/api/generate", async (req, res) => {
         if (rejected.length) console.warn(`[Generate] re-creating ${rejected.length} media asset_id(s) after scheme error`);
         const retryBody = await resolveVisualAssetsForGenerate(req, body, { forceAssetUrls: rejected, rid });
         await new Promise((r) => setTimeout(r, 3000));
-        ({ resp, data } = await forwardVideoGeneration(req, retryBody));
+        ({ resp, data } = await forwardVideoGeneration(req, retryBody, { rid, attempt: "retry" }));
         diag("generate.upstream.retry", {
           rid,
           status: resp.status,
@@ -219,7 +336,7 @@ app.post("/api/generate", async (req, res) => {
             diag("generate.invalid_scheme.final_retry", { rid, rejected: finalRejected });
             const finalBody = await resolveVisualAssetsForGenerate(req, retryBody, { forceAssetUrls: finalRejected, rid });
             await new Promise((r) => setTimeout(r, 12000));
-            ({ resp, data } = await forwardVideoGeneration(req, finalBody));
+            ({ resp, data } = await forwardVideoGeneration(req, finalBody, { rid, attempt: "final_retry" }));
             body = finalBody;
             diag("generate.upstream.final_retry", {
               rid,
@@ -257,9 +374,11 @@ app.post("/api/generate", async (req, res) => {
   }
 });
 
-async function forwardVideoGeneration(req, body) {
+async function forwardVideoGeneration(req, body, { rid = requestId(req, "gen"), attempt = "initial" } = {}) {
+  const started = Date.now();
   const upstreamBody = normalizeAssetUrlSchemeForUpstream(body);
-  const resp = await fetch(`${getBase(req)}/v1/video/generations`, {
+  const upstreamUrl = `${getBase(req)}/v1/video/generations`;
+  const resp = await fetch(upstreamUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -273,6 +392,19 @@ async function forwardVideoGeneration(req, body) {
     data = text ? JSON.parse(text) : {};
   } catch {
     data = { error: text || `Upstream returned HTTP ${resp.status} with an empty response body` };
+  }
+  if (!resp.ok) {
+    recordFullUpstreamError({
+      rid,
+      attempt,
+      req,
+      upstreamUrl,
+      upstreamBody,
+      resp,
+      responseText: text,
+      data,
+      ms: Date.now() - started,
+    });
   }
   return { resp, data };
 }
