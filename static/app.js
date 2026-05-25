@@ -1680,11 +1680,6 @@ function restoreInput(taskId) {
   document.getElementById("compose-box").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function videoPlaybackUrl(url) {
-  if (!url || !/^https:\/\//i.test(url)) return url || "";
-  return `/api/video-proxy?url=${encodeURIComponent(url)}`;
-}
-
 function renderOneTask(t) {
   const SL = {submitting:"Submitting",whitelisting:"Whitelisting",submitted:"Queued",processing:"Generating",running:"Generating",completed:"Done",failed:"Failed",cancelled:"Cancelled"};
   if (t.status === "failure") t.status = "failed";
@@ -1705,7 +1700,7 @@ function renderOneTask(t) {
   h += `<div class="task-body">`;
   h += renderTaskInput(t);
   if (t.videoUrl) {
-    h += `<video class="task-video" src="${esc(videoPlaybackUrl(t.videoUrl))}" controls playsinline preload="metadata"></video>`;
+    h += `<video class="task-video" src="${esc(t.videoUrl)}" controls playsinline preload="metadata"></video>`;
     if (!t.demo) h += `<div class="task-actions"><input type="text" value="${esc(t.videoUrl)}" readonly onclick="this.select()"><button onclick="navigator.clipboard.writeText('${escJs(t.videoUrl)}')">Copy</button><a href="${esc(t.videoUrl)}" target="_blank" download class="s">Save</a></div>`;
   }
   const detailsOpen = t.status === "failed" ? " open" : "";

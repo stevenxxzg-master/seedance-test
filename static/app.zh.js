@@ -1664,11 +1664,6 @@ function restoreInput(taskId) {
   document.getElementById("compose-box").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function videoPlaybackUrl(url) {
-  if (!url || !/^https:\/\//i.test(url)) return url || "";
-  return `/api/video-proxy?url=${encodeURIComponent(url)}`;
-}
-
 function renderOneTask(t) {
   const SL = {submitting:"提交中",whitelisting:"素材加白中",submitted:"已提交",processing:"生成中",running:"生成中",completed:"完成",failed:"失败",cancelled:"已取消"};
   if (t.status === "failure") t.status = "failed";
@@ -1689,7 +1684,7 @@ function renderOneTask(t) {
   h += `<div class="task-body">`;
   h += renderTaskInput(t);
   if (t.videoUrl) {
-    h += `<video class="task-video" src="${esc(videoPlaybackUrl(t.videoUrl))}" controls playsinline preload="metadata"></video>`;
+    h += `<video class="task-video" src="${esc(t.videoUrl)}" controls playsinline preload="metadata"></video>`;
     if (!t.demo) h += `<div class="task-actions"><input type="text" value="${esc(t.videoUrl)}" readonly onclick="this.select()"><button onclick="navigator.clipboard.writeText('${escJs(t.videoUrl)}')">复制</button><a href="${esc(t.videoUrl)}" target="_blank" download class="s">下载</a></div>`;
   }
   const detailsOpen = t.status === "failed" ? " open" : "";
